@@ -15,40 +15,11 @@ const char * password = "cezerilab2024";
 
 WebServer server(80);
 
-void handleStatus() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  
-  // Create JSON response
-  StaticJsonDocument<300> doc;
-  doc["device"] = "Deneyap Kart RC Truck";
-  doc["version"] = "1.0.0";
-  doc["wifi_rssi"] = WiFi.RSSI();
-  doc["free_heap"] = ESP.getFreeHeap();
-  doc["uptime_ms"] = millis();
-  
-  String response;
-  serializeJson(doc, response);
-  
-  server.send(200, "application/json", response);
-  Serial.println("Status requested");
-}
+const uint8_t LED = D14;
+const uint32_t BLINK_INTERVAL = 500;
 
-void setRoutes(){
-  server.onNotFound([]() {
-    server.sendHeader("Access-Control-Allow-Origin", "*");
-    server.send(404, "text/plain", "Endpoint not found"); });
-
-  server.on("/health", HTTP_GET, []() {
-    server.sendHeader("Access-Control-Allow-Origin", "*");
-    server.send(200, "application/json", "{\"status\":\"ok\",\"uptime\":" + String(millis()) + "}");
-  });
-
-  server.on("/status", HTTP_GET, handleStatus);
-  
-}
-
-
-
+void handleStatus() ;
+void setRoutes();
 
 void setup() {
   Serial.begin(115200);
@@ -72,9 +43,9 @@ void setup() {
   Serial.println("server started");
   Serial.println("Available endpoints:");
   Serial.println("  GET  /status     - Get system status");
+  Serial.println("  GET  /led     - Post led commands");
 
 }
-
 
 
 void loop() {
@@ -88,4 +59,83 @@ void loop() {
   }
   
   delay(10);
+}
+
+void handleStatus() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  // Create JSON response
+  StaticJsonDocument<300> doc;
+  doc["device"] = "Deneyap Kart RC Truck";
+  doc["version"] = "1.0.0";
+  doc["wifi_rssi"] = WiFi.RSSI();
+  doc["free_heap"] = ESP.getFreeHeap();
+  doc["uptime_ms"] = millis();
+  
+  String response;
+  serializeJson(doc, response);
+  
+  server.send(200, "application/json", response);
+  Serial.println("Status requested");
+}
+
+void handleLed(){
+  server.sendHeader("Access-control-Allow-Origin", "*");
+
+  if (server.hasArg("state")) {
+    String state = server.arg("state");
+    
+    StaticJsonDocument<100> resdoc;
+    DeserializationError error = deserializeJson(resdoc, state);
+
+    if(error){
+      server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+      return;
+    }
+    if (resdoc.containsKey("state")){
+      uint8_t ledState = resdoc["state"];
+      switch(ledState) {
+        case 0:
+          digitalWrite(LED, LOW);
+          server.send(200, "application/json", "{\"status\":\"LED turned off\"}");
+          Serial.println("LED turned off");
+          break;
+        case 1:
+          digitalWrite(LED, HIGH);
+          server.send(200, "application/json", "{\"status\":\"LED turned on\"}");
+          Serial.println("LED turned on");
+          break;
+        case 2:
+          uint32_t current_time = millis();
+          static uint32_t last_blink_time = 0;
+          if(current_time - last_blink_time >= BLINK_INTERVAL) {
+            digitalWrite(LED, !digitalRead(LED)); // Toggle LED state
+            last_blink_time = current_time;
+          }
+          server.send(200, "application/json", "{\"status\":\"LED blinked once\"}");
+          Serial.println("LED blinked once");
+          break;
+      }
+
+    }
+    else {
+      server.send(400, "application/json", "{\"error\":\"Missing 'state' key\"}");
+    }
+  }
+}
+
+void setRoutes(){
+  server.onNotFound([]() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(404, "text/plain", "Endpoint not found"); });
+
+  server.on("/health", HTTP_GET, []() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(200, "application/json", "{\"status\":\"ok\",\"uptime\":" + String(millis()) + "}");
+  });
+
+  server.on("/status", HTTP_GET, handleStatus);
+
+  server.on("/status", HTTP_POST, handleLed);
+  
 }
