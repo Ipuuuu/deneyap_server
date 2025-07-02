@@ -1,0 +1,91 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ArduinoJson.h>
+
+//wifi credentials
+const char * ssid = "CEZERİ-LAB";
+const char * password = "cezerilab2024";
+
+// const char * ssid = "God Abeg";
+// const char * password = "Godabegooo";
+
+// const char * ssid = "GAMZELICANSU20";
+// const char * password = "BOLU5678";
+
+
+WebServer server(80);
+
+void handleStatus() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  // Create JSON response
+  StaticJsonDocument<300> doc;
+  doc["device"] = "Deneyap Kart RC Truck";
+  doc["version"] = "1.0.0";
+  doc["wifi_rssi"] = WiFi.RSSI();
+  doc["free_heap"] = ESP.getFreeHeap();
+  doc["uptime_ms"] = millis();
+  
+  String response;
+  serializeJson(doc, response);
+  
+  server.send(200, "application/json", response);
+  Serial.println("Status requested");
+}
+
+void setRoutes(){
+  server.onNotFound([]() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(404, "text/plain", "Endpoint not found"); });
+
+  server.on("/health", HTTP_GET, []() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(200, "application/json", "{\"status\":\"ok\",\"uptime\":" + String(millis()) + "}");
+  });
+
+  server.on("/status", HTTP_GET, handleStatus);
+  
+}
+
+
+
+
+void setup() {
+  Serial.begin(115200);
+
+  //Connect to wifi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+
+  while(WiFi.status() != WL_CONNECTED){
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.print("Connected to WiFi. IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  setRoutes();
+
+  server.begin();
+  Serial.println("server started");
+  Serial.println("Available endpoints:");
+  Serial.println("  GET  /status     - Get system status");
+
+}
+
+
+
+void loop() {
+  server.handleClient();
+  
+  // Optional: Print periodic status
+  static unsigned long lastPrint = 0;
+  if (millis() - lastPrint > 10000) { // Every 10 seconds
+    Serial.println("Server running... IP: " + WiFi.localIP().toString());
+    lastPrint = millis();
+  }
+  
+  delay(10);
+}
