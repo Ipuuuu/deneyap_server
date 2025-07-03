@@ -1,3 +1,4 @@
+
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
@@ -15,7 +16,7 @@ const char * password = "cezerilab2024";
 
 WebServer server(80);
 
-const uint8_t LED = D14;
+const uint8_t LED = 14;
 const uint32_t BLINK_INTERVAL = 500;
 
 void handleStatus() ;
@@ -58,7 +59,7 @@ void loop() {
     lastPrint = millis();
   }
   
-  delay(10);
+  delay(100);
 }
 
 void handleStatus() {
@@ -80,10 +81,11 @@ void handleStatus() {
 }
 
 void handleLed(){
-  server.sendHeader("Access-control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Origin", "*");
 
-  if (server.hasArg("state")) {
-    String state = server.arg("state");
+  if (server.hasArg("plain")) {
+    String state = server.arg("plain");
+    Serial.println("Received raw JSON: " + state);
     
     StaticJsonDocument<100> resdoc;
     DeserializationError error = deserializeJson(resdoc, state);
@@ -105,7 +107,7 @@ void handleLed(){
           server.send(200, "application/json", "{\"status\":\"LED turned on\"}");
           Serial.println("LED turned on");
           break;
-        case 2:
+        case 2:{
           uint32_t current_time = millis();
           static uint32_t last_blink_time = 0;
           if(current_time - last_blink_time >= BLINK_INTERVAL) {
@@ -114,13 +116,18 @@ void handleLed(){
           }
           server.send(200, "application/json", "{\"status\":\"LED blinked once\"}");
           Serial.println("LED blinked once");
-          break;
+          break; }
+        default:
+          server.send(400, "application/json", "{\"error\":\"Unknown LED state\"}");
       }
 
     }
     else {
       server.send(400, "application/json", "{\"error\":\"Missing 'state' key\"}");
     }
+  }
+  else {
+    server.send(400, "application/json", "{\"error\":\"Missing JSON body\"}");
   }
 }
 
@@ -139,3 +146,4 @@ void setRoutes(){
   server.on("/led", HTTP_POST, handleLed);
   
 }
+
