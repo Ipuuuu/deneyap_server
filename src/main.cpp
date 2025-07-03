@@ -136,6 +136,6 @@ void setRoutes(){
 
   server.on("/status", HTTP_GET, handleStatus);
 
-  server.on("/status", HTTP_POST, handleLed);
+  server.on("/led", HTTP_POST, handleLed);
   
 }
