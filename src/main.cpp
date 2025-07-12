@@ -18,13 +18,15 @@ const char * password = "cezerilab2024";
 WebServer server(80);
 
 
-const uint32_t BLINK_INTERVAL = 500;
+const uint32_t BLINK_INTERVAL = 200;
 
 void handleStatus() ;
 void setRoutes();
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
+
+  pinMode(LED, OUTPUT);
 
   //Connect to wifi
   WiFi.begin(ssid, password);
@@ -56,7 +58,7 @@ void loop() {
   // Optional: Print periodic status
   static unsigned long lastPrint = 0;
   if (millis() - lastPrint > 10000) { // Every 10 seconds
-    Serial.println("Server running... IP: " + WiFi.localIP().toString());
+    Serial.println("Server running..... IP: " + WiFi.localIP().toString());
     lastPrint = millis();
   }
   
