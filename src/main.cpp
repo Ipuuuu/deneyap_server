@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
+#define LED D13
 
 //wifi credentials
 const char * ssid = "CEZERİ-LAB";
@@ -16,7 +17,7 @@ const char * password = "cezerilab2024";
 
 WebServer server(80);
 
-const uint8_t LED = 14;
+
 const uint32_t BLINK_INTERVAL = 500;
 
 void handleStatus() ;
