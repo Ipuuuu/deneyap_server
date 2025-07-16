@@ -5,7 +5,7 @@
 #define LED D13
 
 //wifi credentials
-const char * ssid = "CEZERİ-LAB";
+const char * ssid = "CAR";
 const char * password = "cezerilab2024";
 
 // const char * ssid = "God Abeg";
@@ -47,7 +47,7 @@ void handleControl();
 
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
 
   pinMode(LED, OUTPUT);
 
@@ -56,19 +56,27 @@ void setup() {
   pinMode(leftForward, OUTPUT);
   pinMode(leftBackward, OUTPUT);
 
-  //Connect to wifi
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
+  delay(5000);
 
+  //Connect to wifi
+  //WiFi.begin(ssid, password);
+  WiFi.softAP(ssid, password);
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("AP IP address: ");
+  Serial.println(IP);
+  Serial.print("Connecting to WiFi");
+/*
   while(WiFi.status() != WL_CONNECTED){
     delay(500);
     Serial.print(".");
   }
 
+  */
+ /*
   Serial.println();
   Serial.print("Connected to WiFi. IP Address: ");
   Serial.println(WiFi.localIP());
-
+*/
   setRoutes();
 
   server.begin();
