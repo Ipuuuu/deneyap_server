@@ -14,20 +14,25 @@ const char * password = "cezerilab2024";
 // const char * ssid = "GAMZELICANSU20";
 // const char * password = "BOLU5678";
 
-//motor pins
-const uint8_t rightForward = A0;
-const uint8_t rightBackward = A1;
-const uint8_t leftForward = A2;
-const uint8_t leftBackward = A3;
+// Left side motor pins (Driver 1)
 
-const uint8_t leftSpeed = D14;
-const uint8_t RightSpeed = D13;
+const uint8_t leftForward = A2; // R_PWM_LEFT
+const uint8_t leftBackward = A3; // L_PWM_LEFT
+const int R_EN_LEFT = A4;    // Left side right enable
+const int L_EN_LEFT = A5;    // Left side left enable
+
+
+// Right side motor pins (Driver 2)
+const uint8_t rightForward = A0; //R_PWM_RIGHT
+const uint8_t rightBackward = A1; //L_PWM_RIGHT
+const int R_EN_RIGHT = A6;  // Right side right enable
+const int L_EN_RIGHT = A7;  // Right side left enable
+
 
 WebServer server(80);
 
 struct Control{
-  uint8_t left_speed;
-  uint8_t right_speed;
+  uint8_t speed;
   String direction;
 };
 
@@ -37,12 +42,16 @@ const uint32_t BLINK_INTERVAL = 200;
 
 void handleStatus() ;
 void setRoutes();
-void back_and_forth(uint8_t l = 200, uint8_t r = 200);
-void forward(uint8_t l = 200, uint8_t r = 200);
-void backward(uint8_t l = 200, uint8_t r = 200);
+void setLeftMotor(int speed);
+void setRightMotor(int speed);  
+void forward(int speed = 255);
+void backward(int speed = 255);
+void turnLeft(int speed = 255);
+void turnRight(int speed  = 255);
+void spinLeft(int speed = 150);
+void spinRight(int speed = 150);
 void stop();
-void turn_left(uint8_t l = 150, uint8_t r = 255);
-void turn_right(uint8_t l = 255, uint8_t r = 150);
+
 void handleControl();
 
 
@@ -55,6 +64,16 @@ void setup() {
   pinMode(rightBackward, OUTPUT);
   pinMode(leftForward, OUTPUT);
   pinMode(leftBackward, OUTPUT);
+  pinMode(R_EN_LEFT, OUTPUT);
+  pinMode(L_EN_LEFT, OUTPUT);
+  pinMode(R_EN_RIGHT, OUTPUT);
+  pinMode(L_EN_RIGHT, OUTPUT);
+  
+  // Enable all motor driver sides
+  digitalWrite(R_EN_LEFT, HIGH);
+  digitalWrite(L_EN_LEFT, HIGH);
+  digitalWrite(R_EN_RIGHT, HIGH);
+  digitalWrite(L_EN_RIGHT, HIGH);
 
   delay(5000);
 
@@ -192,36 +211,38 @@ void handleControl(){
     Serial.println("Direction: " + control.direction);
   }
 
-  if (doc.containsKey("right_speed") && doc.containsKey("left_speed")) {
-    control.left_speed = doc["left_speed"].as<uint8_t>();
-    control.right_speed = doc["right_speed"].as<uint8_t>();
-    Serial.println("Left Speed: " + String(control.left_speed));
-    Serial.println("Right Speed: " + String(control.right_speed));
+  if (doc.containsKey("speed") ) {
+    control.speed = doc["speed"].as<uint8_t>();
+    Serial.println("Speed: " + String(control.speed));
   }
 
   if(control.direction == "forward") {
-    forward(control.left_speed, control.right_speed);
+    forward(control.speed);
     server.send(200, "application/json", "{\"status\":\"Moving forward\"}");
   }
   else if(control.direction == "backward") {
-    backward(control.left_speed, control.right_speed);
+    backward(control.speed);
     server.send(200, "application/json", "{\"status\":\"Moving backward\"}");
   }
   else if(control.direction == "left") {
-    turn_left(control.left_speed, control.right_speed);
+    turnLeft(control.speed);
     server.send(200, "application/json", "{\"status\":\"Turning left\"}");
   }
   else if(control.direction == "right") {
-    turn_right(control.left_speed, control.right_speed);
+    turnRight(control.speed);
     server.send(200, "application/json", "{\"status\":\"Turning right\"}");
   }
   else if(control.direction == "stop") {
     stop();
     server.send(200, "application/json", "{\"status\":\"Stopped\"}");
   }
-  else if(control.direction == "back_and_forth") {
-    back_and_forth(control.left_speed, control.right_speed);
-    server.send(200, "application/json", "{\"status\":\"Back and forth\"}");
+  else if(control.direction == "sleft") {
+    spinLeft(control.speed);
+    server.send(200, "application/json", "{\"status\":\"Spin Left\"}");
+  }
+  else if(control.direction == "sright") {
+    spinRight(control.speed);
+    server.send(200, "application/json", "{\"status\":\"Spin Right\"}");
   }
   else {
     server.send(400, "application/json", "{\"error\":\"Unknown direction\"}");
@@ -246,75 +267,99 @@ void setRoutes(){
   server.on("/control", HTTP_POST, handleControl);
   
 }
-
-
-void back_and_forth(uint8_t l, uint8_t r){
-  analogWrite(leftSpeed, l);
-  analogWrite(RightSpeed, r);
-
-  digitalWrite(rightForward, HIGH);
-  digitalWrite(rightBackward, LOW);
-  digitalWrite(leftForward, HIGH);
-  digitalWrite(leftBackward, LOW);
-
-  delay(2000);
-
-  digitalWrite(rightForward, LOW);
-  digitalWrite(rightBackward, HIGH);
-  digitalWrite(leftForward, LOW);
-  digitalWrite(leftBackward, HIGH);
-
-  delay(2000);
-
+void forward(int speed) {
+  // Both sides forward at same speed
+  setLeftMotor(speed);
+  setRightMotor(speed);
 }
 
-void forward(uint8_t l, uint8_t r){
-  analogWrite(leftSpeed, l);
-  analogWrite(RightSpeed, r);
-
-  digitalWrite(rightForward, HIGH);
-  digitalWrite(rightBackward, LOW);
-  digitalWrite(leftForward, HIGH);
-  digitalWrite(leftBackward, LOW);
-
+void backward(int speed) {
+  // Both sides backward at same speed
+  setLeftMotor(-speed);
+  setRightMotor(-speed);
 }
 
-void backward(uint8_t l , uint8_t r ){
-  analogWrite(leftSpeed, l);
-  analogWrite(RightSpeed, r);
+void turnLeft(int speed) {
+  // Right side faster than left (gentle turn)
+  setLeftMotor(speed / 2);
+  setRightMotor(speed);
+}
 
-  digitalWrite(rightForward, LOW);
-  digitalWrite(rightBackward, HIGH);
-  digitalWrite(leftForward, LOW);
-  digitalWrite(leftBackward, HIGH);
+void turnRight(int speed) {
+  // Left side faster than right (gentle turn)
+  setLeftMotor(speed);
+  setRightMotor(speed / 2);
+}
+
+void spinLeft(int speed) {
+  // Left side backward, right side forward (pivot turn)
+  setLeftMotor(-speed);
+  setRightMotor(speed);
+}
+
+void spinRight(int speed) {
+  // Left side forward, right side backward (pivot turn)
+  setLeftMotor(speed);
+  setRightMotor(-speed);
 }
 
 void stop(){
-  analogWrite(leftSpeed, 0);
-  analogWrite(RightSpeed, 0);
+  // Disable all drivers for complete stop
+  digitalWrite(R_EN_LEFT, LOW);
+  digitalWrite(L_EN_LEFT, LOW);
+  digitalWrite(R_EN_RIGHT, LOW);
+  digitalWrite(L_EN_RIGHT, LOW);
+  
+  // Also set PWM to 0
+  setLeftMotor(0);
+  setRightMotor(0);
 
-  digitalWrite(rightForward, LOW);
-  digitalWrite(rightBackward, LOW);
-  digitalWrite(leftForward, LOW);
-  digitalWrite(leftBackward, LOW);
+  uint32_t current_time = millis();
+  static uint32_t last_stop_time = 0;
+  if(current_time - last_stop_time >= 10) {
+    // Re-enable for next operation
+    digitalWrite(R_EN_LEFT, HIGH);
+    digitalWrite(L_EN_LEFT, HIGH);
+    digitalWrite(R_EN_RIGHT, HIGH);
+    digitalWrite(L_EN_RIGHT, HIGH);
+    last_stop_time = current_time;
+  }
 }
 
-void turn_left(uint8_t l, uint8_t r){
-  analogWrite(leftSpeed, l);
-  analogWrite(RightSpeed, r); 
-
-  digitalWrite(rightForward, HIGH);
-  digitalWrite(rightBackward, LOW);
-  digitalWrite(leftForward, LOW);
-  digitalWrite(leftBackward, HIGH);
+void setLeftMotor(int speed) {
+  // Speed range: -255 (full reverse) to +255 (full forward)
+  if (speed > 0) {
+    // Forward direction
+    analogWrite(leftForward, speed);
+    analogWrite(leftBackward, 0);
+  } 
+  else if (speed < 0) {
+    // Reverse direction
+    analogWrite(leftForward, 0);
+    analogWrite(leftBackward, -speed);
+  } 
+  else {
+    // Stop
+    analogWrite(leftForward, 0);
+    analogWrite(leftBackward, 0);
+  }
 }
 
-void turn_right(uint8_t l, uint8_t r){
-  analogWrite(leftSpeed, l);
-  analogWrite(RightSpeed, r);
-
-  digitalWrite(rightForward, LOW);
-  digitalWrite(rightBackward, HIGH);
-  digitalWrite(leftForward, HIGH);
-  digitalWrite(leftBackward, LOW);
+void setRightMotor(int speed) {
+  // Speed range: -255 (full reverse) to +255 (full forward)
+  if (speed > 0) {
+    // Forward direction
+    analogWrite(rightForward, speed);
+    analogWrite(rightBackward, 0);
+  } 
+  else if (speed < 0) {
+    // Reverse direction
+    analogWrite(rightForward, 0);
+    analogWrite(rightBackward, -speed);
+  } 
+  else {
+    // Stop
+    analogWrite(rightForward, 0);
+    analogWrite(rightBackward, 0);
+  }
 }
