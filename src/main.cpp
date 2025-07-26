@@ -23,8 +23,8 @@ const int L_EN_LEFT = A5;    // Left side left enable
 
 
 // Right side motor pins (Driver 2)
-const uint8_t rightForward = A0; //R_PWM_RIGHT
-const uint8_t rightBackward = A1; //L_PWM_RIGHT
+const uint8_t rightForward = A1; //R_PWM_RIGHT
+const uint8_t rightBackward = A0; //L_PWM_RIGHT
 const int R_EN_RIGHT = A6;  // Right side right enable
 const int L_EN_RIGHT = A7;  // Right side left enable
 
@@ -139,7 +139,7 @@ void handleStatus() {
   Serial.println("Status requested");
 }
 
-void handleLed(){
+void handleLed(){  
   server.sendHeader("Access-Control-Allow-Origin", "*");
 
   if (server.hasArg("plain")) {
