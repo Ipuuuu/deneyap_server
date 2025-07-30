@@ -2,7 +2,10 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
+#include "arm.cpp"
 #define LED D13
+
+
 
 //wifi credentials
 const char * ssid = "CAR";
@@ -16,17 +19,17 @@ const char * password = "cezerilab2024";
 
 // Left side motor pins (Driver 1)
 
-const uint8_t leftForward = A2; // R_PWM_LEFT
-const uint8_t leftBackward = A3; // L_PWM_LEFT
-const int R_EN_LEFT = A4;    // Left side right enable
-const int L_EN_LEFT = A5;    // Left side left enable
+const uint8_t leftForward = A4; // R_PWM_LEFT
+const uint8_t leftBackward = A5; // L_PWM_LEFT
+const int R_EN_LEFT = A6;    // Left side right enable
+const int L_EN_LEFT = A7;    // Left side left enable
 
 
 // Right side motor pins (Driver 2)
 const uint8_t rightForward = A1; //R_PWM_RIGHT
 const uint8_t rightBackward = A0; //L_PWM_RIGHT
-const int R_EN_RIGHT = A6;  // Right side right enable
-const int L_EN_RIGHT = A7;  // Right side left enable
+const int R_EN_RIGHT = A2;  // Right side right enable
+const int L_EN_RIGHT = A3;  // Right side left enable
 
 
 WebServer server(80);
@@ -36,7 +39,13 @@ struct Control{
   String direction;
 };
 
+struct ArmControl {
+  String direction;
+};
+
 Control control ; 
+RoboticArm roboticArm;
+ArmControl armControl;
 
 const uint32_t BLINK_INTERVAL = 200;
 
@@ -53,6 +62,7 @@ void spinRight(int speed = 150);
 void stop();
 
 void handleControl();
+void handleArm() ;
 
 
 void setup() {
@@ -104,7 +114,9 @@ void setup() {
   Serial.println("  GET  /status     - Get system status");
   Serial.println("  GET  /led     - Post led commands");
   Serial.println("  GET  /control     - Post motor commands");
+  Serial.println("  POST /arm        - Post arm commands");
 
+  roboticArm.begin(); // Initialize the robotic arm
 }
 
 
@@ -266,6 +278,7 @@ void setRoutes(){
 
   server.on("/control", HTTP_POST, handleControl);
   
+  server.on("/arm", HTTP_POST, handleArm); 
 }
 void forward(int speed) {
   // Both sides forward at same speed
@@ -361,5 +374,62 @@ void setRightMotor(int speed) {
     // Stop
     analogWrite(rightForward, 0);
     analogWrite(rightBackward, 0);
+  }
+}
+
+
+void handleArm() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  if (server.hasArg("plain")) {
+    String body = server.arg("plain");
+    Serial.println("Arm command received: " + body);
+    
+    StaticJsonDocument<200> doc;
+    DeserializationError error = deserializeJson(doc, body);
+    
+    if (error) {
+      server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+      return;
+    }
+
+    if (doc.containsKey("direction")) {
+    armControl.direction = doc["direction"].as<String>();
+    String response;
+      
+      if (armControl.direction == "forward") {
+        response = roboticArm.pickUp();
+      }
+      else if (armControl.direction == "backward") {
+        response = roboticArm.release();
+      }
+      else if (armControl.direction == "left") {
+        response = roboticArm.scanLeft();
+      }
+      else if (armControl.direction == "right") {
+        response = roboticArm.scanRight();
+      }
+      else if (armControl.direction == "open") {
+        response = roboticArm.open();
+      }
+      else if (armControl.direction == "close") {
+        response = roboticArm.close();
+      }
+      else if (armControl.direction == "status") {
+        response = roboticArm.getStatus();
+      }
+      else {
+        server.send(400, "application/json", "{\"error\":\"Unknown arm command\"}");
+        return;
+      }
+      
+      server.send(200, "application/json", response);
+    }
+    else {
+      server.send(400, "application/json", "{\"error\":\"Missing 'command' key\"}");
+    }
+  }
+  else {
+    server.send(400, "application/json", "{\"error\":\"Missing JSON body\"}");
   }
 }
