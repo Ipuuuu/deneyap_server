@@ -3,6 +3,8 @@
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include "arm.cpp"
+#include "arm.h"
+#include <ESP32Servo.h>
 #define LED D13
 
 
@@ -63,6 +65,9 @@ void stop();
 
 void handleControl();
 void handleArm() ;
+void handleDumper();
+void handleLed();
+void serialServo(String, int);
 
 
 void setup() {
@@ -115,6 +120,7 @@ void setup() {
   Serial.println("  GET  /led     - Post led commands");
   Serial.println("  GET  /control     - Post motor commands");
   Serial.println("  POST /arm        - Post arm commands");
+  Serial.println("  GET  /dumper     - Post dumper commands");
 
   roboticArm.begin(); // Initialize the robotic arm
 }
@@ -129,8 +135,22 @@ void loop() {
     Serial.println("Server running..... IP: " + WiFi.localIP().toString());
     lastPrint = millis();
   }
+
+  if(Serial.available()){
+    String command = Serial.readStringUntil('\n');
+    command.trim();
+
+    auto servo = command.substring(0, 1);
+
+    int angle = command.substring(1).toInt();
+    serialServo(servo, angle);
+
+    Serial.printf("Servo ");
+  }
+
+     
   
-  delay(100);
+  // delay(100);
 }
 
 void handleStatus() {
@@ -279,6 +299,8 @@ void setRoutes(){
   server.on("/control", HTTP_POST, handleControl);
   
   server.on("/arm", HTTP_POST, handleArm); 
+
+  server.on("/dumper", HTTP_POST, handleDumper); 
 }
 void forward(int speed) {
   // Both sides forward at same speed
@@ -431,5 +453,69 @@ void handleArm() {
   }
   else {
     server.send(400, "application/json", "{\"error\":\"Missing JSON body\"}");
+  }
+}
+
+void handleDumper(){
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  
+  if (server.hasArg("plain")) {
+    String body = server.arg("plain");
+    Serial.println("Dumper command received: " + body);
+    
+    StaticJsonDocument<100> doc;
+    DeserializationError error = deserializeJson(doc, body);
+    
+    if (error) {
+      server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+      return;
+    }
+
+    if (doc.containsKey("direction")) {
+      String action = doc["direction"].as<String>();
+      String response;
+
+      if (action == "dumperOpen") {
+        response = roboticArm.dumperOpen();
+      } 
+      else if (action == "dumperClose") {
+        response = roboticArm.dumperClose();
+      } 
+      else {
+        server.send(400, "application/json", "{\"error\":\"Unknown dumper action\"}");
+        return;
+      }
+      
+      server.send(200, "application/json", response);
+    } 
+    else {
+      server.send(400, "application/json", "{\"error\":\"Missing 'action' key\"}");
+    }
+  }  
+  else {
+    server.send(400, "application/json", "{\"error\":\"Missing JSON body\"}");
+  }
+}
+
+void serialServo(String servo, int angle){
+  if (!roboticArm.isReady()) {
+    Serial.println("Robotic arm not initialized");
+    return;
+  }
+
+  if (servo == "b") {
+    roboticArm.baseServo.write(angle);
+  } else if (servo == "s") {
+    roboticArm.shoulderServo.write(angle);
+  } else if (servo == "e") {
+    roboticArm.elbowServo.write(angle);
+  } else if (servo == "w") {
+    roboticArm.wristServo.write(angle);
+  } else if (servo == "g") {
+    roboticArm.gripperServo.write(angle);
+  } else if (servo == "d") {
+    roboticArm.dumperServo.write(angle);
+  } else {
+    Serial.println("Unknown servo: " + servo);
   }
 }

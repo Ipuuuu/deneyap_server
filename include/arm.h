@@ -6,20 +6,22 @@
 #include <ESP32Servo.h>
 
 class RoboticArm {
-private:
+public:
     // Servo objects
     Servo baseServo;
     Servo shoulderServo;
     Servo elbowServo;
     Servo wristServo;
     Servo gripperServo;
+    Servo dumperServo;
     
     // Pin assignments
-    static const uint8_t BASE_PIN = 3;
-    static const uint8_t SHOULDER_PIN = D12;
-    static const uint8_t ELBOW_PIN = D13;
-    static const uint8_t WRIST_PIN = D14;
-    static const uint8_t GRIPPER_PIN = 10;
+    static const uint8_t BASE_PIN = D0; // PURPLE
+    static const uint8_t SHOULDER_PIN = D12; //GREEN
+    static const uint8_t ELBOW_PIN = D13; //YELLOW
+    static const uint8_t WRIST_PIN = D14; //ORANGE
+    static const uint8_t GRIPPER_PIN = D1; // BLUE
+    static const uint8_t DUMPER_PIN = D8; // RED
     
     // Calibration angles
     static const uint8_t HOME_BASE = 90;
@@ -27,6 +29,7 @@ private:
     static const uint8_t HOME_ELBOW = 90;
     static const uint8_t HOME_WRIST = 90;
     static const uint8_t HOME_GRIPPER = 10;
+    static const uint8_t HOME_DUMPER = 0;
     
     static const uint8_t PICKUP_SHOULDER = 45;
     static const uint8_t PICKUP_ELBOW = 135;
@@ -42,6 +45,9 @@ private:
     
     static const uint8_t SCAN_LEFT = 45;
     static const uint8_t SCAN_RIGHT = 135;
+    static const uint8_t DUMPER_OPEN = 90;
+    static const uint8_t DUMPER_CLOSED = 0;
+    
     
     // Timing
     static const uint16_t SERVO_DELAY = 500;
@@ -65,6 +71,8 @@ public:
     String scanRight();   // Returns JSON status
     String open();        // Returns JSON status
     String close();       // Returns JSON status
+    String dumperOpen();    // Returns JSON status
+    String dumperClose();   // Returns JSON status
     
     // Status functions
     bool getGripperState(); // Returns true if open, false if closed

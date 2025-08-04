@@ -2,7 +2,7 @@
 
 RoboticArm::RoboticArm() {
     isGripperOpen = true;
-    isInitialized = false;
+    isInitialized = true;//change to false
 }
 
 void RoboticArm::begin() {
@@ -14,6 +14,7 @@ void RoboticArm::begin() {
     elbowServo.attach(ELBOW_PIN);
     wristServo.attach(WRIST_PIN);
     gripperServo.attach(GRIPPER_PIN);
+    dumperServo.attach(DUMPER_PIN);
     
     delay(100); // Allow servos to attach
     
@@ -29,6 +30,8 @@ void RoboticArm::begin() {
     delay(SERVO_DELAY);
     gripperServo.write(HOME_GRIPPER);
     delay(SERVO_DELAY);
+    // dumperServo.write(HOME_DUMPER);
+    // delay(SERVO_DELAY);
     
     // Run startup test
     Serial.println("Running startup servo test...");
@@ -107,7 +110,7 @@ String RoboticArm::pickUp() {
     Serial.println("  Moving to pickup position");
     shoulderServo.write(PICKUP_SHOULDER);
     delay(SERVO_DELAY);
-    elbowServo.write(PICKUP_ELBOW);
+    elbowServo.write(PICKUP_ELBOW );
     delay(SERVO_DELAY);
     wristServo.write(PICKUP_WRIST);
     delay(SERVO_DELAY);
@@ -216,6 +219,30 @@ String RoboticArm::close() {
     isGripperOpen = false;
     
     return "{\"status\":\"Gripper closed\"}";
+}
+
+String RoboticArm::dumperOpen() {
+    if (!isInitialized) {
+        return "{\"error\":\"Arm not initialized\"}";
+    }
+    
+    Serial.println("Opening dumper");
+    dumperServo.write(DUMPER_OPEN);
+    delay(SERVO_DELAY);
+    
+    return "{\"status\":\"Dumper opened\"}";
+}
+
+String RoboticArm::dumperClose() {
+    if (!isInitialized) {
+        return "{\"error\":\"Arm not initialized\"}";
+    }
+    
+    Serial.println("Closing dumper");
+    dumperServo.write(DUMPER_CLOSED);
+    delay(SERVO_DELAY);
+    
+    return "{\"status\":\"Dumper closed\"}";    
 }
 
 //  STATUS FUNCTIONS 
