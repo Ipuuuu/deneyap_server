@@ -13,11 +13,6 @@
 const char * ssid = "CAR";
 const char * password = "cezerilab2024";
 
-// const char * ssid = "God Abeg";
-// const char * password = "Godabegooo";
-
-// const char * ssid = "GAMZELICANSU20";
-// const char * password = "BOLU5678";
 
 // Left side motor pins (Driver 1)
 
@@ -33,12 +28,25 @@ const uint8_t rightBackward = A0; //L_PWM_RIGHT
 const int R_EN_RIGHT = A2;  // Right side right enable
 const int L_EN_RIGHT = A3;  // Right side left enable
 
+bool DEBUG = true;
+const uint8_t DECELERATION_STEP = 8;
+
 
 WebServer server(80);
 
 struct Control{
-  uint8_t speed;
-  String direction;
+  uint8_t leftspeed;
+  uint8_t rightspeed;
+ 
+};
+
+struct MotorState {
+  int currentLeftSpeed = 0;
+  int currentRightSpeed = 0;
+  int targetLeftSpeed = 0;
+  int targetRightSpeed = 0;
+  unsigned long lastUpdateTime = 0;
+  bool isMoving = false;
 };
 
 struct ArmControl {
@@ -48,20 +56,18 @@ struct ArmControl {
 Control control ; 
 RoboticArm roboticArm;
 ArmControl armControl;
+MotorState motorState;
 
 const uint32_t BLINK_INTERVAL = 200;
+const unsigned long UPDATE_INTERVAL = 20; // Update motor speed
 
 void handleStatus() ;
 void setRoutes();
 void setLeftMotor(int speed);
-void setRightMotor(int speed);  
-void forward(int speed = 255);
-void backward(int speed = 255);
-void turnLeft(int speed = 255);
-void turnRight(int speed  = 255);
-void spinLeft(int speed = 150);
-void spinRight(int speed = 150);
+void setRightMotor(int speed);
 void stop();
+void estop();
+void updateMotorSpeed();
 
 void handleControl();
 void handleArm() ;
@@ -99,18 +105,7 @@ void setup() {
   Serial.print("AP IP address: ");
   Serial.println(IP);
   Serial.print("Connecting to WiFi");
-/*
-  while(WiFi.status() != WL_CONNECTED){
-    delay(500);
-    Serial.print(".");
-  }
 
-  */
- /*
-  Serial.println();
-  Serial.print("Connected to WiFi. IP Address: ");
-  Serial.println(WiFi.localIP());
-*/
   setRoutes();
 
   server.begin();
@@ -123,15 +118,21 @@ void setup() {
   Serial.println("  GET  /dumper     - Post dumper commands");
 
   roboticArm.begin(); // Initialize the robotic arm
+  motorState.lastUpdateTime = millis(); // Initialize motor state update time
+
+
 }
 
 
 void loop() {
   server.handleClient();
   
+  //update motor speeds for smooth deceleration
+  updateMotorSpeed();
+  
   // Optional: Print periodic status
   static unsigned long lastPrint = 0;
-  if (millis() - lastPrint > 10000) { // Every 10 seconds
+  if (millis() - lastPrint > 15000) { // Every 15 seconds
     Serial.println("Server running..... IP: " + WiFi.localIP().toString());
     lastPrint = millis();
   }
@@ -147,138 +148,135 @@ void loop() {
 
     Serial.printf("Servo ");
   }
+}
 
-     
+void updateMotorSpeed(){
+  uint32_t current_time = millis();
+
+  if(current_time - motorState.lastUpdateTime >= UPDATE_INTERVAL){
+    bool speedchanged = false;
+    
+    // update left motor 
+    if(motorState.currentLeftSpeed != motorState.targetLeftSpeed){
+      int diff = motorState.targetLeftSpeed - motorState.currentLeftSpeed;
+      int step = -DECELERATION_STEP;
+
+      if (abs(diff) <= abs(step)) {
+        motorState.currentLeftSpeed = motorState.targetLeftSpeed;
+      } else {
+        motorState.currentLeftSpeed += step;
+      }
+      speedchanged = true;
+    }
+
+    // update right motor 
+    if(motorState.currentRightSpeed != motorState.targetRightSpeed){
+      int diff = motorState.targetRightSpeed  - motorState.currentRightSpeed;
+      int step = -DECELERATION_STEP;
+
+      if (abs(diff) <= abs(step)) {
+        motorState.currentRightSpeed = motorState.targetRightSpeed;
+      } else {
+        motorState.currentRightSpeed += step;
+      }
+      speedchanged = true;
+    }
+
+    if(speedchanged){
+      setLeftMotor(motorState.currentLeftSpeed);
+      setRightMotor(motorState.currentRightSpeed);
+    }
+    
+    //update moving state
+    motorState.isMoving = (motorState.currentLeftSpeed != 0 || motorState.currentRightSpeed != 0);
+    motorState.lastUpdateTime = current_time;
+  }
+
+}
+
+void setTargetSpeeds(int leftTarget, int rightTarget) {
+  // Constrain speeds to valid range
+  leftTarget = constrain(leftTarget, -255, 255);
+  rightTarget = constrain(rightTarget, -255, 255);
   
-  // delay(100);
+  motorState.targetLeftSpeed = leftTarget;
+  motorState.targetRightSpeed = rightTarget;
+  
+  if (DEBUG) {
+    Serial.printf("Target speeds set - Left: %d, Right: %d\n", leftTarget, rightTarget);
+  }
 }
 
 void handleStatus() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
+
+  String response = "device=Deneyap Kart RC Truck&version=1.0.0&wifi_rssi=" + String(WiFi.RSSI())
+  + "&free_heap=" + String(ESP.getFreeHeap()) + "&uptime_ms=" + String(millis()) +
+  "&arm_initialized=" + String(roboticArm.isReady()) +
+  "&gripper_state=" + String(roboticArm.getGripperState() ? "open" : "closed");
+
+  server.send(200, "application/x-www-form-urlencoded", response);
   
-  // Create JSON response
-  StaticJsonDocument<300> doc;
-  doc["device"] = "Deneyap Kart RC Truck";
-  doc["version"] = "1.0.0";
-  doc["wifi_rssi"] = WiFi.RSSI();
-  doc["free_heap"] = ESP.getFreeHeap();
-  doc["uptime_ms"] = millis();
-  
-  String response;
-  serializeJson(doc, response);
-  
-  server.send(200, "application/json", response);
-  Serial.println("Status requested");
+  if(DEBUG){Serial.println("Status requested");}
 }
 
 void handleLed(){  
   server.sendHeader("Access-Control-Allow-Origin", "*");
 
-  if (server.hasArg("plain")) {
-    String state = server.arg("plain");
-    Serial.println("LED Command received: " + state);
+  if (server.hasArg("state")) {
+    String stateStr = server.arg("state");
+    Serial.println("LED Command received: " + stateStr);
     
-    StaticJsonDocument<100> resdoc;
-    DeserializationError error = deserializeJson(resdoc, state);
+    // Convert string to integer
+    int ledState = stateStr.toInt();
+    
+    switch(ledState) {
+      case 0:
+        digitalWrite(LED, LOW);
+        server.send(200, "application/json", "{\"ledStatus\":\"off\"}");
+        if(DEBUG){Serial.println("LED turned off");}
+        break;
+      case 1:
+        digitalWrite(LED, HIGH);
+        server.send(200, "application/json", "{\"ledStatus\":\"on\"}");
+        if(DEBUG){Serial.println("LED turned on");}
+        break;
+      case 2:{
+        uint32_t current_time = millis();
+        static uint32_t last_blink_time = 0;
+        if(current_time - last_blink_time >= BLINK_INTERVAL) {
+          digitalWrite(LED, !digitalRead(LED)); // Toggle LED state
+          last_blink_time = current_time;
+        }
+        server.send(200, "application/json", "{\"ledStatus\":\"blinked once\"}");
+        if(DEBUG){Serial.println("LED blinked");}
+        break; }
+      default:
+        server.send(400, "application/json", "{\"error\":\"Unknown LED state\"}");
+    }
 
-    if(error){
-      server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-      return;
-    }
-    if (resdoc.containsKey("state")){
-      uint8_t ledState = resdoc["state"];
-      switch(ledState) {
-        case 0:
-          digitalWrite(LED, LOW);
-          server.send(200, "application/json", "{\"status\":\"LED turned off\"}");
-          Serial.println("LED turned off");
-          break;
-        case 1:
-          digitalWrite(LED, HIGH);
-          server.send(200, "application/json", "{\"status\":\"LED turned on\"}");
-          Serial.println("LED turned on");
-          break;
-        case 2:{
-          uint32_t current_time = millis();
-          static uint32_t last_blink_time = 0;
-          if(current_time - last_blink_time >= BLINK_INTERVAL) {
-            digitalWrite(LED, !digitalRead(LED)); // Toggle LED state
-            last_blink_time = current_time;
-          }
-          server.send(200, "application/json", "{\"status\":\"LED blinked once\"}");
-          Serial.println("LED blinked once");
-          break; }
-        default:
-          server.send(400, "application/json", "{\"error\":\"Unknown LED state\"}");
-      }
-
-    }
-    else {
-      server.send(400, "application/json", "{\"error\":\"Missing 'state' key\"}");
-    }
   }
   else {
-    server.send(400, "application/json", "{\"error\":\"Missing JSON body\"}");
+    server.send(400, "application/json", "{\"error\":\"Missing 'state' key\"}");
   }
-}
+  }
+
 
 void handleControl(){
   server.sendHeader("Access-Control-Allow-Origin", "*");
 
-  if(server.hasArg("plain")){
-    String body = server.arg("plain");
-    Serial.println("Control Commanded received: " + body);
-  }
+  if(server.hasArg("left") && server.hasArg("right")){
+    control.leftspeed = server.arg("left").toInt();
+    control.rightspeed = server.arg("right").toInt();
 
-  StaticJsonDocument<200> doc;
-  DeserializationError error = deserializeJson(doc, server.arg("plain"));
-
-  if (error) {
-    server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-    return;
+    if(DEBUG){Serial.println("Left: " + String(control.leftspeed) + ", Right: " + String(control.rightspeed));}
+    setLeftMotor(control.leftspeed);
+    setRightMotor(control.rightspeed);
   }
-
-  if (doc.containsKey("direction")) {
-    control.direction = doc["direction"].as<String>();
-    Serial.println("Direction: " + control.direction);
-  }
-
-  if (doc.containsKey("speed") ) {
-    control.speed = doc["speed"].as<uint8_t>();
-    Serial.println("Speed: " + String(control.speed));
-  }
-
-  if(control.direction == "forward") {
-    forward(control.speed);
-    server.send(200, "application/json", "{\"status\":\"Moving forward\"}");
-  }
-  else if(control.direction == "backward") {
-    backward(control.speed);
-    server.send(200, "application/json", "{\"status\":\"Moving backward\"}");
-  }
-  else if(control.direction == "left") {
-    turnLeft(control.speed);
-    server.send(200, "application/json", "{\"status\":\"Turning left\"}");
-  }
-  else if(control.direction == "right") {
-    turnRight(control.speed);
-    server.send(200, "application/json", "{\"status\":\"Turning right\"}");
-  }
-  else if(control.direction == "stop") {
-    stop();
-    server.send(200, "application/json", "{\"status\":\"Stopped\"}");
-  }
-  else if(control.direction == "sleft") {
-    spinLeft(control.speed);
-    server.send(200, "application/json", "{\"status\":\"Spin Left\"}");
-  }
-  else if(control.direction == "sright") {
-    spinRight(control.speed);
-    server.send(200, "application/json", "{\"status\":\"Spin Right\"}");
-  }
-  else {
-    server.send(400, "application/json", "{\"error\":\"Unknown direction\"}");
-  }
+  else{server.send(400, "application/json", "{\"error\":\"Unknown Arg, expecting: left&right \"}");}
+  
+    
+  
 
 }
 
@@ -293,61 +291,21 @@ void setRoutes(){
   });
 
   server.on("/status", HTTP_GET, handleStatus);
-
   server.on("/led", HTTP_POST, handleLed);
-
   server.on("/control", HTTP_POST, handleControl);
-  
   server.on("/arm", HTTP_POST, handleArm); 
-
   server.on("/dumper", HTTP_POST, handleDumper); 
 }
-void forward(int speed) {
-  // Both sides forward at same speed
-  setLeftMotor(speed);
-  setRightMotor(speed);
-}
 
-void backward(int speed) {
-  // Both sides backward at same speed
-  setLeftMotor(-speed);
-  setRightMotor(-speed);
-}
-
-void turnLeft(int speed) {
-  // Right side faster than left (gentle turn)
-  setLeftMotor(speed / 2);
-  setRightMotor(speed);
-}
-
-void turnRight(int speed) {
-  // Left side faster than right (gentle turn)
-  setLeftMotor(speed);
-  setRightMotor(speed / 2);
-}
-
-void spinLeft(int speed) {
-  // Left side backward, right side forward (pivot turn)
-  setLeftMotor(-speed);
-  setRightMotor(speed);
-}
-
-void spinRight(int speed) {
-  // Left side forward, right side backward (pivot turn)
-  setLeftMotor(speed);
-  setRightMotor(-speed);
-}
-
-void stop(){
+void estop(){
   // Disable all drivers for complete stop
   digitalWrite(R_EN_LEFT, LOW);
   digitalWrite(L_EN_LEFT, LOW);
   digitalWrite(R_EN_RIGHT, LOW);
   digitalWrite(L_EN_RIGHT, LOW);
   
-  // Also set PWM to 0
-  setLeftMotor(0);
-  setRightMotor(0);
+  analogWrite(leftForward, 0);
+  analogWrite(leftBackward, 0);
 
   uint32_t current_time = millis();
   static uint32_t last_stop_time = 0;
@@ -360,6 +318,12 @@ void stop(){
     last_stop_time = current_time;
   }
 }
+
+void stop(){
+  // Set target speeds to 0 for gradual deceleration (smooth stop)
+  setTargetSpeeds(0, 0);
+}
+
 
 void setLeftMotor(int speed) {
   // Speed range: -255 (full reverse) to +255 (full forward)
@@ -375,8 +339,7 @@ void setLeftMotor(int speed) {
   } 
   else {
     // Stop
-    analogWrite(leftForward, 0);
-    analogWrite(leftBackward, 0);
+    estop();
   }
 }
 
@@ -394,8 +357,7 @@ void setRightMotor(int speed) {
   } 
   else {
     // Stop
-    analogWrite(rightForward, 0);
-    analogWrite(rightBackward, 0);
+    estop();
   }
 }
 
