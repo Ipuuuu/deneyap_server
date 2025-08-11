@@ -26,6 +26,8 @@ const int L_EN_RIGHT = A3;  // Right side left enable
 
 // Config constants
 bool DEBUG = true;
+volatile bool motorUpdateFlag = false;
+hw_timer_t *timer = NULL;
 const uint8_t DECELERATION_STEP = 3;
 const uint8_t ACCELERATION_STEP = 5;
 const uint32_t BLINK_INTERVAL = 200;
@@ -42,7 +44,7 @@ struct MotorState {
   int currentRightSpeed = 0;
   int targetLeftSpeed = 0;
   int targetRightSpeed = 0;
-  unsigned long lastUpdateTime = 0;
+  // unsigned long lastUpdateTime = 0;|
   bool isMoving = false;
 };
 
@@ -82,10 +84,19 @@ void setupWiFi();
 void printAvailableEndpoints();
 void printPeriodicStatus();
 
+// timer for motor update
+void IRAM_ATTR onTimer() {
+  motorUpdateFlag = true;  
+}
 
 void setup() {
   Serial.begin(115200);
   setupPins();
+
+  timer = timerBegin(0, 80, true);
+  timerAttachInterrupt(timer, &onTimer, true);
+  timerAlarmWrite(timer, 30000, true); //30ms interval
+  timerAlarmEnable(timer);
 
   setupWiFi();
   setRoutes();
@@ -95,14 +106,17 @@ void setup() {
   printAvailableEndpoints();
 
   roboticArm.begin(); // Initialize the robotic arm
-  motorState.lastUpdateTime = millis(); // Initialize motor state update time
+  // motorState.lastUpdateTime = millis(); // Initialize motor state update time
 
 }
 
 
 void loop() {
   server.handleClient();
-  updateMotorSpeed();
+  if(motorUpdateFlag){
+    motorUpdateFlag = false;
+    updateMotorSpeed();
+  }
   printPeriodicStatus();
 }
 
@@ -156,74 +170,72 @@ void printPeriodicStatus() {
 }
 
 void updateMotorSpeed(){
-  uint32_t current_time = millis();
+  
+  bool speedchanged = false;
+  
+  // Debug: Print current state before updates
+  if (DEBUG) {
+    Serial.printf("[MOTOR DEBUG] Current: L=%d R=%d | Target: L=%d R=%d\n", 
+                  motorState.currentLeftSpeed, motorState.currentRightSpeed,
+                  motorState.targetLeftSpeed, motorState.targetRightSpeed);
+  }
+  
+  // update left motor 
+  if(motorState.currentLeftSpeed != motorState.targetLeftSpeed){
+    int diff = motorState.targetLeftSpeed - motorState.currentLeftSpeed;
+    int step = (abs(diff) > 0) ? ((diff > 0) ? ACCELERATION_STEP : -DECELERATION_STEP) : 0;
 
-  if(current_time - motorState.lastUpdateTime >= UPDATE_INTERVAL){
-    bool speedchanged = false;
+    int oldLeftSpeed = motorState.currentLeftSpeed;
     
-    // Debug: Print current state before updates
+    if (abs(diff) <= abs(step)) {
+      motorState.currentLeftSpeed = motorState.targetLeftSpeed;
+    }
+    else {
+      motorState.currentLeftSpeed += step;
+    }
+    
     if (DEBUG) {
-      Serial.printf("[MOTOR DEBUG] Current: L=%d R=%d | Target: L=%d R=%d\n", 
-                    motorState.currentLeftSpeed, motorState.currentRightSpeed,
-                    motorState.targetLeftSpeed, motorState.targetRightSpeed);
+      Serial.printf("[LEFT] %d -> %d (step: %d, diff: %d)\n", 
+                    oldLeftSpeed, motorState.currentLeftSpeed, step, diff);
     }
     
-    // update left motor 
-    if(motorState.currentLeftSpeed != motorState.targetLeftSpeed){
-      int diff = motorState.targetLeftSpeed - motorState.currentLeftSpeed;
-      int step = (abs(diff) > 0) ? ((diff > 0) ? ACCELERATION_STEP : -DECELERATION_STEP) : 0;
+    speedchanged = true;
+  }
 
-      int oldLeftSpeed = motorState.currentLeftSpeed;
-      
-      if (abs(diff) <= abs(step)) {
-        motorState.currentLeftSpeed = motorState.targetLeftSpeed;
-      }
-      else {
-        motorState.currentLeftSpeed += step;
-      }
-      
-      if (DEBUG) {
-        Serial.printf("[LEFT] %d -> %d (step: %d, diff: %d)\n", 
-                      oldLeftSpeed, motorState.currentLeftSpeed, step, diff);
-      }
-      
-      speedchanged = true;
+  // update right motor 
+  if(motorState.currentRightSpeed != motorState.targetRightSpeed){
+    int diff = motorState.targetRightSpeed - motorState.currentRightSpeed;
+    int step = (abs(diff) > 0) ? ((diff > 0) ? ACCELERATION_STEP : -DECELERATION_STEP) : 0;
+
+    int oldRightSpeed = motorState.currentRightSpeed;
+    
+    if (abs(diff) <= abs(step)) {
+      motorState.currentRightSpeed = motorState.targetRightSpeed;
+    } 
+    else {
+      motorState.currentRightSpeed += step;
     }
-
-    // update right motor 
-    if(motorState.currentRightSpeed != motorState.targetRightSpeed){
-      int diff = motorState.targetRightSpeed - motorState.currentRightSpeed;
-      int step = (abs(diff) > 0) ? ((diff > 0) ? ACCELERATION_STEP : -DECELERATION_STEP) : 0;
-
-      int oldRightSpeed = motorState.currentRightSpeed;
-      
-      if (abs(diff) <= abs(step)) {
-        motorState.currentRightSpeed = motorState.targetRightSpeed;
-      } 
-      else {
-        motorState.currentRightSpeed += step;
-      }
-      
-      if (DEBUG) {
-        Serial.printf("[RIGHT] %d -> %d (step: %d, diff: %d)\n", 
-                      oldRightSpeed, motorState.currentRightSpeed, step, diff);
-      }
-      
-      speedchanged = true;
+    
+    if (DEBUG) {
+      Serial.printf("[RIGHT] %d -> %d (step: %d, diff: %d)\n", 
+                    oldRightSpeed, motorState.currentRightSpeed, step, diff);
     }
+    
+    speedchanged = true;
+  }
 
-    if(speedchanged){
-      if (DEBUG) {
-        Serial.printf("[APPLYING] Setting motors to L=%d R=%d\n", 
-                      motorState.currentLeftSpeed, motorState.currentRightSpeed);
-      }
-      
-      setLeftMotor(motorState.currentLeftSpeed);
-      setRightMotor(motorState.currentRightSpeed);
-      
-      if (DEBUG) {
-        Serial.println("[APPLIED] Motor values written to hardware");
-      }
+  if(speedchanged){
+    if (DEBUG) {
+      Serial.printf("[APPLYING] Setting motors to L=%d R=%d\n", 
+                    motorState.currentLeftSpeed, motorState.currentRightSpeed);
+    }
+    
+    setLeftMotor(motorState.currentLeftSpeed);
+    setRightMotor(motorState.currentRightSpeed);
+    
+    if (DEBUG) {
+      Serial.println("[APPLIED] Motor values written to hardware");
+    }
     }
     
     //update moving state
@@ -236,8 +248,7 @@ void updateMotorSpeed(){
                     motorState.isMoving ? "true" : "false");
     }
     
-    motorState.lastUpdateTime = current_time;
-  }
+  
 }
 
 void setTargetSpeeds(int leftTarget, int rightTarget) {
