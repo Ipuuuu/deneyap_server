@@ -12,17 +12,32 @@
 const char * ssid = "CAR";
 const char * password = "cezerilab2024";
 
+// //PINS FOR THE DENEYAP KART 1A V2
+// // Left side motor pins (Driver 1)
+// const uint8_t leftForward = A4; // R_PWM_LEFT
+// const uint8_t leftBackward = A5; // L_PWM_LEFT
+// const int R_EN_LEFT = A6;    // Left side right enable
+// const int L_EN_LEFT = A7;    // Left side left enable
+
+// // Right side motor pins (Driver 2)
+// const uint8_t rightForward = A1; //R_PWM_RIGHT
+// const uint8_t rightBackward = A0; //L_PWM_RIGHT
+// const int R_EN_RIGHT = A2;  // Right side right enable
+// const int L_EN_RIGHT = A3;  // Right side left enable
+
+
+//PINS FOR THE DENEYAP KART 1A 
 // Left side motor pins (Driver 1)
 const uint8_t leftForward = A4; // R_PWM_LEFT
 const uint8_t leftBackward = A5; // L_PWM_LEFT
-const int R_EN_LEFT = A6;    // Left side right enable
-const int L_EN_LEFT = A7;    // Left side left enable
+const int R_EN_LEFT = D7;    // Left side right enable
+const int L_EN_LEFT = D9;    // Left side left enable
 
 // Right side motor pins (Driver 2)
-const uint8_t rightForward = A1; //R_PWM_RIGHT
-const uint8_t rightBackward = A0; //L_PWM_RIGHT
-const int R_EN_RIGHT = A2;  // Right side right enable
-const int L_EN_RIGHT = A3;  // Right side left enable
+const uint8_t rightForward = D0; //R_PWM_RIGHT
+const uint8_t rightBackward = D1; //L_PWM_RIGHT
+const int R_EN_RIGHT = D4;  // Right side right enable
+const int L_EN_RIGHT = D6;  // Right side left enable
 
 // Config constants
 bool DEBUG = true;
