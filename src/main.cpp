@@ -2,11 +2,12 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
-#include "arm.cpp"
-#include "arm.h"
+#include <SoftwareSerial.h>
 #include <ESP32Servo.h>
 
 #define LED D13
+
+SoftwareSerial stm32Serial(D14, D13); // RX, TX pins for STM32 communication
 
 // wifi credentials
 const char * ssid = "CAR";
@@ -28,25 +29,25 @@ const char * password = "cezerilab2024";
 
 //PINS FOR THE DENEYAP KART 1A 
 // Left side motor pins (Driver 1)
-const uint8_t leftForward = A4; // R_PWM_LEFT
-const uint8_t leftBackward = A5; // L_PWM_LEFT
-const int R_EN_LEFT = D7;    // Left side right enable
-const int L_EN_LEFT = D9;    // Left side left enable
+const uint8_t leftForward = A4; // R_PWM_LEFT blue
+const uint8_t leftBackward = A5; // L_PWM_LEFT purple
+const int R_EN_LEFT = D7;    // Left side right enable grey
+const int L_EN_LEFT = D9;    // Left side left enable white
 
 // Right side motor pins (Driver 2)
-const uint8_t rightForward = D0; //R_PWM_RIGHT
-const uint8_t rightBackward = D1; //L_PWM_RIGHT
-const int R_EN_RIGHT = D4;  // Right side right enable
-const int L_EN_RIGHT = D6;  // Right side left enable
+const uint8_t rightForward = D0; //R_PWM_RIGHT yellow
+const uint8_t rightBackward = D1; //L_PWM_RIGHT green
+const int R_EN_RIGHT = D4;  // Right side right enable orange
+const int L_EN_RIGHT = D6;  // Right side left enable red
 
 // Config constants
 bool DEBUG = true;
 volatile bool motorUpdateFlag = false;
 hw_timer_t *timer = NULL;
-const uint8_t DECELERATION_STEP = 3;
-const uint8_t ACCELERATION_STEP = 5;
+const uint8_t DECELERATION_STEP = 8;
+const uint8_t ACCELERATION_STEP = 12;
 const uint32_t BLINK_INTERVAL = 200;
-const unsigned long UPDATE_INTERVAL = 30; // Update motor speed
+const unsigned long UPDATE_INTERVAL = 20; // Update motor speed
 const unsigned long STATUS_PRINT_INTERVAL = 15000; // Print status every 15 seconds
 
 struct Control{
@@ -63,17 +64,13 @@ struct MotorState {
   bool isMoving = false;
 };
 
-struct ArmControl {
-  String direction;
-};
+
 
 // Global Objects
 
 WebServer server(80);
 
 Control control ; 
-RoboticArm roboticArm;
-ArmControl armControl;
 MotorState motorState;
 
 // Handlers
@@ -93,7 +90,7 @@ void emergencyStop();
 void updateMotorSpeed();
 
 // Utility Functions
-void serialServo(String, int);
+void sendServoCommand(String, int);
 void setupPins();
 void setupWiFi();
 void printAvailableEndpoints();
@@ -106,6 +103,7 @@ void IRAM_ATTR onTimer() {
 
 void setup() {
   Serial.begin(115200);
+  stm32Serial.begin(115200);
   setupPins();
 
   timer = timerBegin(0, 80, true);
@@ -120,7 +118,7 @@ void setup() {
   Serial.println("server started");
   printAvailableEndpoints();
 
-  roboticArm.begin(); // Initialize the robotic arm
+  
   // motorState.lastUpdateTime = millis(); // Initialize motor state update time
 
 }
@@ -189,11 +187,11 @@ void updateMotorSpeed(){
   bool speedchanged = false;
   
   // Debug: Print current state before updates
-  if (DEBUG) {
-    Serial.printf("[MOTOR DEBUG] Current: L=%d R=%d | Target: L=%d R=%d\n", 
-                  motorState.currentLeftSpeed, motorState.currentRightSpeed,
-                  motorState.targetLeftSpeed, motorState.targetRightSpeed);
-  }
+  // if (DEBUG) {
+  //   Serial.printf("[MOTOR DEBUG] Current: L=%d R=%d | Target: L=%d R=%d\n", 
+  //                 motorState.currentLeftSpeed, motorState.currentRightSpeed,
+  //                 motorState.targetLeftSpeed, motorState.targetRightSpeed);
+  // }
   
   // update left motor 
   if(motorState.currentLeftSpeed != motorState.targetLeftSpeed){
@@ -286,9 +284,7 @@ void handleStatus() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
 
   String response = "device=Deneyap Kart RC Truck&version=1.0.0&wifi_rssi=" + String(WiFi.RSSI())
-  + "&free_heap=" + String(ESP.getFreeHeap()) + "&uptime_ms=" + String(millis()) +
-  "&arm_initialized=" + String(roboticArm.isReady()) +
-  "&gripper_state=" + String(roboticArm.getGripperState() ? "open" : "closed");
+  + "&free_heap=" + String(ESP.getFreeHeap()) + "&uptime_ms=" + String(millis());
 
   server.send(200, "application/x-www-form-urlencoded", response);
   
@@ -337,35 +333,35 @@ void handleSetServo() {
   // Check each possible servo argument independently
   if (server.hasArg("base")) {
     int angle = constrain(server.arg("base").toInt(), 0, 360);
-    serialServo("b", angle);
+    sendServoCommand("b", angle);
     response += "\"base\":" + String(angle) + ",";
     servoMoved = true;
   }
   
   if (server.hasArg("shoulder")) {
     int angle = constrain(server.arg("shoulder").toInt(), 0, 180);
-    serialServo("s", angle);
+    sendServoCommand("s", angle);
     response += "\"shoulder\":" + String(angle) + ",";
     servoMoved = true;
   }
   
   if (server.hasArg("elbow")) {
     int angle = constrain(server.arg("elbow").toInt(), 0, 180);
-    serialServo("e", angle);
+    sendServoCommand("e", angle);
     response += "\"elbow\":" + String(angle) + ",";
     servoMoved = true;
   }
   
   if (server.hasArg("wrist")) {
     int angle = constrain(server.arg("wrist").toInt(), 0, 180);
-    serialServo("w", angle);
+    sendServoCommand("w", angle);
     response += "\"wrist\":" + String(angle) + ",";
     servoMoved = true;
   }
   
   if (server.hasArg("gripper")) {
     int angle = constrain(server.arg("gripper").toInt(), 0, 180);
-    serialServo("g", angle);
+    sendServoCommand("g", angle);
     response += "\"gripper\":" + String(angle) + ",";
     servoMoved = true;
   }
@@ -376,7 +372,7 @@ void handleSetServo() {
     server.send(200, "application/json", response);
     
     if (DEBUG) {
-      Serial.println("Servo command processed");
+      Serial.println("Servo command processed and sent to STM32");
     }
   } else {
     server.send(400, "application/json", "{\"error\":\"No valid servo arguments provided. Use: base, shoulder, elbow, wrist, or gripper\"}");
@@ -466,124 +462,56 @@ void setRightMotor(int speed) {
   }
 }
 
-
-void handleArm() {
+void handleDumper() {
   server.sendHeader("Access-Control-Allow-Origin", "*");
   
-  if (server.hasArg("plain")) {
-    String body = server.arg("plain");
-    Serial.println("Arm command received: " + body);
+  if (server.hasArg("state")) {
+    int state = server.arg("state").toInt();
     
-    StaticJsonDocument<200> doc;
-    DeserializationError error = deserializeJson(doc, body);
-    
-    if (error) {
-      server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-      return;
-    }
-
-    if (doc.containsKey("direction")) {
-    armControl.direction = doc["direction"].as<String>();
-    String response;
-      
-      if (armControl.direction == "forward") {
-        response = roboticArm.pickUp();
+    if (state == 0) {
+      // Close dumper - 0 degrees
+      sendServoCommand("d", 0);
+      server.send(200, "application/json", "{\"dumper\":\"closed\",\"angle\":0}");
+      if (DEBUG) {
+        Serial.println("Dumper closed (0 degrees)");
       }
-      else if (armControl.direction == "backward") {
-        response = roboticArm.release();
+    } 
+    else if (state == 1) {
+      // Open dumper - 90 degrees
+      sendServoCommand("d", 90);
+      server.send(200, "application/json", "{\"dumper\":\"opened\",\"angle\":90}");
+      if (DEBUG) {
+        Serial.println("Dumper opened (90 degrees)");
       }
-      else if (armControl.direction == "left") {
-        response = roboticArm.scanLeft();
-      }
-      else if (armControl.direction == "right") {
-        response = roboticArm.scanRight();
-      }
-      else if (armControl.direction == "open") {
-        response = roboticArm.open();
-      }
-      else if (armControl.direction == "close") {
-        response = roboticArm.close();
-      }
-      else if (armControl.direction == "status") {
-        response = roboticArm.getStatus();
-      }
-      else {
-        server.send(400, "application/json", "{\"error\":\"Unknown arm command\"}");
-        return;
-      }
-      
-      server.send(200, "application/json", response);
-    }
-    else {
-      server.send(400, "application/json", "{\"error\":\"Missing 'command' key\"}");
-    }
-  }
-  else {
-    server.send(400, "application/json", "{\"error\":\"Missing JSON body\"}");
-  }
-}
-
-void handleDumper(){
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  
-  if (server.hasArg("plain")) {
-    String body = server.arg("plain");
-    Serial.println("Dumper command received: " + body);
-    
-    StaticJsonDocument<100> doc;
-    DeserializationError error = deserializeJson(doc, body);
-    
-    if (error) {
-      server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
-      return;
-    }
-
-    if (doc.containsKey("direction")) {
-      String action = doc["direction"].as<String>();
-      String response;
-
-      if (action == "dumperOpen") {
-        response = roboticArm.dumperOpen();
-      } 
-      else if (action == "dumperClose") {
-        response = roboticArm.dumperClose();
-      } 
-      else {
-        server.send(400, "application/json", "{\"error\":\"Unknown dumper action\"}");
-        return;
-      }
-      
-      server.send(200, "application/json", response);
     } 
     else {
-      server.send(400, "application/json", "{\"error\":\"Missing 'action' key\"}");
+      server.send(400, "application/json", "{\"error\":\"Invalid state. Use 0 for close or 1 for open\"}");
     }
-  }  
+  } 
   else {
-    server.send(400, "application/json", "{\"error\":\"Missing JSON body\"}");
+    server.send(400, "application/json", "{\"error\":\"Missing 'state' parameter. Use state=0 for close or state=1 for open\"}");
   }
 }
 
-
-void serialServo(String servo, int angle){
-  if (!roboticArm.isReady()) {
-    Serial.println("Robotic arm not initialized");
-    return;
+void sendServoCommand(String servo, int angle) {
+  String command = servo + " " + String(angle);
+  stm32Serial.println(command);
+  
+  if (DEBUG) {
+    Serial.println("Sent to STM32: " + command);
   }
-
-  if (servo == "b") {
-    roboticArm.baseServo.write(angle);
-  } else if (servo == "s") {
-    roboticArm.shoulderServo.write(angle);
-  } else if (servo == "e") {
-    roboticArm.elbowServo.write(angle);
-  } else if (servo == "w") {
-    roboticArm.wristServo.write(angle);
-  } else if (servo == "g") {
-    roboticArm.gripperServo.write(angle);
-  } else if (servo == "d") {
-    roboticArm.dumperServo.write(angle);
-  } else {
-    Serial.println("Unknown servo: " + servo);
+  
+  // Optional: Wait for acknowledgment from STM32
+  // You can add timeout logic here if needed
+  unsigned long timeout = millis() + 1000; // 1 second timeout
+  while (millis() < timeout && !stm32Serial.available()) {
+    delay(1);
+  }
+  
+  if (stm32Serial.available()) {
+    String response = stm32Serial.readStringUntil('\n');
+    if (DEBUG) {
+      Serial.println("STM32 Response: " + response);
+    }
   }
 }
