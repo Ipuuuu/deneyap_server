@@ -332,35 +332,35 @@ void handleSetServo() {
   
   // Check each possible servo argument independently
   if (server.hasArg("base")) {
-    int angle = constrain(server.arg("base").toInt(), 0, 360);
+    int angle = constrain(server.arg("base").toInt(), 0, 270);
     sendServoCommand("b", angle);
     response += "\"base\":" + String(angle) + ",";
     servoMoved = true;
   }
   
   if (server.hasArg("shoulder")) {
-    int angle = constrain(server.arg("shoulder").toInt(), 0, 180);
+    int angle = constrain(server.arg("shoulder").toInt(), 0, 270);
     sendServoCommand("s", angle);
     response += "\"shoulder\":" + String(angle) + ",";
     servoMoved = true;
   }
   
   if (server.hasArg("elbow")) {
-    int angle = constrain(server.arg("elbow").toInt(), 0, 180);
+    int angle = constrain(server.arg("elbow").toInt(), 0, 270);
     sendServoCommand("e", angle);
     response += "\"elbow\":" + String(angle) + ",";
     servoMoved = true;
   }
   
   if (server.hasArg("wrist")) {
-    int angle = constrain(server.arg("wrist").toInt(), 0, 180);
+    int angle = constrain(server.arg("wrist").toInt(), 0, 270);
     sendServoCommand("w", angle);
     response += "\"wrist\":" + String(angle) + ",";
     servoMoved = true;
   }
   
   if (server.hasArg("gripper")) {
-    int angle = constrain(server.arg("gripper").toInt(), 0, 180);
+    int angle = constrain(server.arg("gripper").toInt(), 0, 270);
     sendServoCommand("g", angle);
     response += "\"gripper\":" + String(angle) + ",";
     servoMoved = true;
