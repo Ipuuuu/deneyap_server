@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <SoftwareSerial.h>
 #include <ESP32Servo.h>
+#include "tof_handler.h"
 
 #define LED D13
 
@@ -72,6 +73,8 @@ WebServer server(80);
 
 Control control ; 
 MotorState motorState;
+
+ToFHandler tofHandler(&stm32Serial);
 
 // Handlers
 void handleStatus() ;
@@ -360,7 +363,7 @@ void handleSetServo() {
   }
   
   if (server.hasArg("gripper")) {
-    int angle = constrain(server.arg("gripper").toInt(), 0, 270);
+    int angle = constrain(server.arg("gripper").toInt(), 0, 180);
     sendServoCommand("g", angle);
     response += "\"gripper\":" + String(angle) + ",";
     servoMoved = true;
@@ -394,6 +397,18 @@ void setRoutes(){
   server.on("/setSpeed", HTTP_POST, handleControl);
   server.on("/setServo", HTTP_POST, handleSetServo); 
   server.on("/dumper", HTTP_POST, handleDumper); 
+  server.on("/tof", HTTP_GET, []() {
+  tofHandler.handleToFGet(server);
+  });
+  server.on("/tof/auto/pickup", HTTP_POST, []() {
+    tofHandler.handleAutoPickup(server);
+  });
+  server.on("/tof/auto/release", HTTP_POST, []() {
+    tofHandler.handleAutoRelease(server);
+  });
+  server.on("/tof/status", HTTP_GET, []() {
+    tofHandler.handleStatus(server);
+  });
 }
 
 void emergencyStop(){
