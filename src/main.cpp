@@ -1,7 +1,9 @@
 
 #include <WiFi.h>
-#include <WebServer.h>
+#include "esp_http_server.h"
+#include "camera_server.cpp"
 #include <SoftwareSerial.h>
+#include <esp_task_wdt.h> // Watchdog timer
 
 SoftwareSerial stm32Serial(D14, D13); // RX, TX pins for STM32 communication
 
@@ -36,7 +38,6 @@ const uint8_t rightBackward = D1; //L_PWM_RIGHT green
 const int R_EN_RIGHT = D4;  // Right side right enable orange
 const int L_EN_RIGHT = D6;  // Right side left enable red
 
-unsigned long lastClientMillis = 0;  // heartbeat timeout
 // Motor state
 struct MotorState {
   int currentLeft = 0, currentRight = 0;
@@ -45,23 +46,24 @@ struct MotorState {
 } motors;
 
 // Config
+httpd_handle_t http_server = NULL;
+hw_timer_t *motorTimer = NULL;
+volatile bool motorUpdateFlag = false;
+
 const uint8_t ACCEL_STEP = 12, DECEL_STEP = 8;
 bool DEBUG = true;
-volatile bool motorUpdateFlag = false;
-hw_timer_t *timer = NULL;
+unsigned long lastClientMillis = 0;  // heartbeat timeout
 
-
-// Global Objects
-WebServer server(80);
-
-// Handlers
-void handleServo() ;
-void handleControl();
-void handleDumper();
-void handleToF();
-void handleAutoPickup();
-void handleAutoRelease();
-void handleEmergencyStop();
+// HTTP Request Handlers
+esp_err_t handle_setSpeed(httpd_req_t *req);
+esp_err_t handle_setServo(httpd_req_t *req);
+esp_err_t handle_dumper(httpd_req_t *req);
+esp_err_t handle_tof(httpd_req_t *req);
+esp_err_t handle_autoPickup(httpd_req_t *req);
+esp_err_t handle_autoRelease(httpd_req_t *req);
+esp_err_t handle_emergency(httpd_req_t *req);
+esp_err_t handle_health(httpd_req_t *req);
+esp_err_t handle_status(httpd_req_t *req);
 
 // Functions declarations
 void setRoutes();
@@ -72,42 +74,52 @@ void updateMotors();
 
 // Utility Functions
 void setupPins();
-void setupTimer();
+void setupMotorTimer();
 void setupWiFi();
-
+char* get_query_param(httpd_req_t *req, const char* key);
 
 // timer for motor update
-void IRAM_ATTR onTimer() {
-  motorUpdateFlag = true;  
+void IRAM_ATTR onMotorTimer() {
+  motorUpdateFlag = true;
 }
+
 
 void setup() {
   Serial.begin(115200);
   stm32Serial.begin(115200);
 
   setupPins();
-  setupTimer();
+  setupMotorTimer();
   setupWiFi();
-  setRoutes();
 
-  server.begin();
-  Serial.println("server started");
+    // Initialize watchdog
+  esp_task_wdt_init(30, true);  // 30-second timeout
+  esp_task_wdt_add(NULL);       // Add current thread
+
+  bool cameraReady = cameraInit();
+  if (cameraReady) {
+    if (startCameraServer(&http_server)) {
+      setRoutes();
+      if (DEBUG) Serial.println("Camera server and routes initialized");
+    }
+  } else {
+    Serial.println("Camera not available - starting HTTP server without camera endpoints");
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = 80;
+    if (httpd_start(&http_server, &config) == ESP_OK) {
+      setRoutes();
+    }
+  }
 
   if (DEBUG) {
-    Serial.println("=== DEBUG MODE ENABLED ===");
-    Serial.println("Available endpoints:");
-    Serial.println("  POST /setSpeed - Motor control");
-    Serial.println("  POST /emergency  - Emergency stop (immediate)");
-    Serial.println("  POST /setServo - Servo control");  
-    Serial.println("  POST /dumper   - Dumper control");
-    Serial.println("  GET  /tof      - Distance reading");
-    Serial.println("========================");
+    Serial.println("Debug Mode Active — Endpoints:");
+    Serial.println("  POST /setSpeed, /setServo, /dumper, /auto/pickup, /auto/release, /emergency");
+    Serial.println("  GET /tof, /health, /status, /stream, /capture");
   }
 
 }
 
 void loop() {
-  server.handleClient();
   lastClientMillis = millis(); 
 
   if(motorUpdateFlag){
@@ -115,11 +127,13 @@ void loop() {
     updateMotors();
   }
 
+  esp_task_wdt_reset(); // Reset watchdog timer
+
   // Check for inactivity (e.g., > 3.5 seconds since last request)
   if (motors.isMoving && (millis() - lastClientMillis > 3500)) {
     gradualStop();  // Smooth stop if no contact
     if (DEBUG) {
-      Serial.println("[SAFETY] No client activity for 2s - gradual stop triggered");
+      Serial.println("[SAFETY] No client activity for 3.5s - gradual stop triggered");
     }
   }
  
@@ -144,11 +158,11 @@ void setupPins(){
 
 }
 
-void setupTimer() {
-  timer = timerBegin(0, 80, true);
-  timerAttachInterrupt(timer, &onTimer, true);
-  timerAlarmWrite(timer, 30000, true); // 30ms
-  timerAlarmEnable(timer);
+void setupMotorTimer() {
+  motorTimer = timerBegin(0, 80, true);
+  timerAttachInterrupt(motorTimer, &onMotorTimer, true);
+  timerAlarmWrite(motorTimer, 30000, true); // 30ms
+  timerAlarmEnable(motorTimer);
 }
 
 void setupWiFi() {
@@ -158,7 +172,24 @@ void setupWiFi() {
   Serial.println(IP);
 }
 
+void setMotor(uint8_t forwardPin, uint8_t backwardPin, int speed) {
+  // Ensure motor drivers are ENABLED before applying PWM
+  digitalWrite(R_EN_LEFT, HIGH);
+  digitalWrite(L_EN_LEFT, HIGH);
+  digitalWrite(R_EN_RIGHT, HIGH);
+  digitalWrite(L_EN_RIGHT, HIGH);
 
+  if (speed > 0) {
+    analogWrite(forwardPin, speed);
+    analogWrite(backwardPin, 0);
+  } else if (speed < 0) {
+    analogWrite(forwardPin, 0);
+    analogWrite(backwardPin, -speed);
+  } else {
+    analogWrite(forwardPin, 0);
+    analogWrite(backwardPin, 0);
+  }
+}
 
 void updateMotors() {
   bool changed = false;
@@ -198,94 +229,9 @@ void updateMotors() {
   }
 }
 
-
-void handleControl() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  
-  if (!server.hasArg("plain")) {
-    server.send(400, "application/json", "{\"error\":\"Missing body\"}");
-    return;
-  }
-
-  String body = server.arg("plain");
-  int space = body.indexOf(' ');
-  if (space <= 0) {
-    server.send(400, "application/json", "{\"error\":\"Format: 'left right'\"}");
-    return;
-  }
-
-  int left = constrain(body.substring(0, space).toInt(), -255, 255);
-  int right = constrain(body.substring(space + 1).toInt(), -255, 255);
-  
-  motors.targetLeft = left;
-  motors.targetRight = right;
-  
-  server.send(200, "application/json", 
-              "{\"left\":" + String(left) + ",\"right\":" + String(right) + "}");
-}
-
-void handleServo() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  
-  String response = "{\"updated\":{";
-  bool moved = false;
-  
-  String servos[] = {"base", "shoulder", "elbow", "wrist", "gripper"};
-  String ids[] = {"b", "s", "e", "w", "g"};
-  int limits[] = {270, 270, 270, 270, 180};
-  
-  for (int i = 0; i < 5; i++) {
-    if (server.hasArg(servos[i])) {
-      int angle = constrain(server.arg(servos[i]).toInt(), 0, limits[i]);
-      stm32Serial.println(ids[i] + " " + String(angle));
-
-      if (DEBUG) {
-        Serial.printf("[SERVO] %s -> %d degrees (cmd: %s %d)\n", 
-                    servos[i].c_str(), angle, ids[i].c_str(), angle);
-      }
-
-      response += "\"" + servos[i] + "\":" + String(angle) + ",";
-      moved = true;
-    }
-  }
-  
-  if (moved) {
-    response.remove(response.length() - 1);
-    response += "}}";
-    server.send(200, "application/json", response);
-
-    if (DEBUG) {
-      Serial.println("[SERVO] Commands sent to STM32");
-    }
-  } else {
-    server.send(400, "application/json", "{\"error\":\"No servo specified\"}");
-  }
-}
-
-void setRoutes(){
-  server.onNotFound([]() {
-    server.sendHeader("Access-Control-Allow-Origin", "*");
-    server.send(404, "text/plain", "Endpoint not found"); });
-
-  server.on("/health", HTTP_GET, []() {
-    server.sendHeader("Access-Control-Allow-Origin", "*");
-    server.send(200, "application/json", "{\"status\":\"ok\"}");
-  });
-
-  server.on("/status", HTTP_GET, []() {
-    server.sendHeader("Access-Control-Allow-Origin", "*");
-    String response = "device=Deneyap&free_heap=" + String(ESP.getFreeHeap()) + 
-                     "&uptime=" + String(millis());
-    server.send(200, "text/plain", response);
-  });
-
-  server.on("/setSpeed", HTTP_POST, handleControl);
-  server.on("/setServo", HTTP_POST, handleServo);
-  server.on("/dumper", HTTP_POST, handleDumper);
-  server.on("/tof", HTTP_GET, handleToF);
-  server.on("/tof/auto/pickup", HTTP_POST, handleAutoPickup);
-  server.on("/tof/auto/release", HTTP_POST, handleAutoRelease);
-  server.on("/emergency", HTTP_POST, handleEmergencyStop);
+void gradualStop(){
+  motors.targetLeft = 0;
+  motors.targetRight = 0;
 }
 
 void emergencyStop(){
@@ -304,118 +250,218 @@ void emergencyStop(){
   analogWrite(rightForward, 0);   
   analogWrite(rightBackward, 0);
 
-  uint32_t current_time = millis();
-  static uint32_t last_stop_time = 0;
-  if(current_time - last_stop_time >= 10) {
-    // Re-enable for next operation
-    digitalWrite(R_EN_LEFT, HIGH);
-    digitalWrite(L_EN_LEFT, HIGH);
-    digitalWrite(R_EN_RIGHT, HIGH);
-    digitalWrite(L_EN_RIGHT, HIGH);
-    last_stop_time = current_time;
-  }
-}
-
-void gradualStop(){
-  motors.targetLeft = 0;
-  motors.targetRight = 0;
-}
-
-void handleEmergencyStop() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  
-  // Reset motor states first
+  // Reset motor states 
   motors.currentLeft = 0;
   motors.currentRight = 0;
   motors.targetLeft = 0;
   motors.targetRight = 0;
   motors.isMoving = false;
-  
-  emergencyStop();
-  
-  server.send(200, "application/json", "{\"emergency\":\"stopped\"}");
+
+  if (DEBUG) Serial.println("EMERGENCY STOP");
 }
 
-void setMotor(uint8_t forwardPin, uint8_t backwardPin, int speed) {
-  if (speed > 0) {
-    analogWrite(forwardPin, speed);
-    analogWrite(backwardPin, 0);
-  } else if (speed < 0) {
-    analogWrite(forwardPin, 0);
-    analogWrite(backwardPin, -speed);
-  } else {
-    analogWrite(forwardPin, 0);
-    analogWrite(backwardPin, 0);
+//HANDLER DEFINITIONS
+esp_err_t handle_setSpeed(httpd_req_t *req) {
+  char buf[64];
+  int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+  if (len <= 0) {
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing request body");
   }
+  buf[len] = '\0';
+
+  // Find space delimiter
+  char* space = strchr(buf, ' ');
+  if (!space) {
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Format: 'left right'");
+  }
+  *space = '\0';  // Terminate first number
+
+  // Convert to integers
+  int left = constrain(atoi(buf), -255, 255);
+  int right = constrain(atoi(space + 1), -255, 255);
+
+  motors.targetLeft = left;
+  motors.targetRight = right;
+  lastClientMillis = millis();
+
+  char resp[100];
+  snprintf(resp, sizeof(resp), "{\"left\":%d,\"right\":%d}", left, right);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
 }
 
-
-void handleDumper() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
+esp_err_t handle_setServo(httpd_req_t *req) {
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   
-  if (!server.hasArg("state")) {
-    server.send(400, "application/json", "{\"error\":\"Missing state\"}");
-    return;
+  const char* servos[] = {"base", "shoulder", "elbow", "wrist", "gripper"};
+  const char* ids[] = {"b", "s", "e", "w", "g"};
+  int limits[] = {270, 270, 270, 270, 180};
+  
+  char response[256] = "{\"updated\":{";
+  int pos = strlen(response);
+  bool moved = false;
+
+  for (int i = 0; i < 5; i++) {
+    char* arg = get_query_param(req, servos[i]);
+    if (arg) {
+      int angle = constrain(atoi(arg), 0, limits[i]);
+      stm32Serial.printf("%c %d\n", ids[i][0], angle);
+      
+      // Append to response safely
+      int n = snprintf(response + pos, sizeof(response) - pos, 
+                     "\"%s\":%d,", servos[i], angle);
+      if (n > 0 && n < (int)(sizeof(response) - pos)) {
+        pos += n;
+        moved = true;
+      }
+      free(arg);
+    }
+  }
+
+  if (!moved) {
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No servo specified");
   }
   
-  int state = server.arg("state").toInt();
+  // Replace trailing comma with closing braces
+  if (pos > 11 && pos < (int)sizeof(response) - 1) {
+    response[pos-1] = '}';
+    response[pos] = '}';
+    response[pos+1] = '\0';
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+  }
+  
+  return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Response build error");
+}
+
+char* get_query_param(httpd_req_t *req, const char* key) {
+  char* buf = NULL;
+  size_t buf_len = httpd_req_get_url_query_len(req) + 1;
+
+  if (buf_len == 1) return NULL;  // No query
+
+  buf = (char*)malloc(buf_len);
+  if (!buf) return NULL;
+
+  if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+    char* value = NULL;
+    if (httpd_query_key_value(buf, key, buf, buf_len) == ESP_OK) {
+      value = strdup(buf);  // Copy before freeing buf
+    }
+    free(buf);
+    return value;
+  }
+
+  free(buf);
+  return NULL;
+}
+
+esp_err_t handle_dumper(httpd_req_t *req) {
+  char* state_str = get_query_param(req, "state");
+  if (!state_str) {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing 'state' param");
+    return ESP_FAIL;
+  }
+
+  int state = atoi(state_str);
+  free(state_str);  // Don't forget!
+
   if (state == 0) {
     stm32Serial.println("d 0");
-    server.send(200, "application/json", "{\"dumper\":\"closed\"}");
-    if (DEBUG) {
-      Serial.println("[DUMPER] Closed (0 degrees)");
-    }
+    httpd_resp_send(req, "{\"dumper\":\"closed\"}", HTTPD_RESP_USE_STRLEN);
   } else if (state == 1) {
     stm32Serial.println("d 90");
-    server.send(200, "application/json", "{\"dumper\":\"opened\"}");
-    if (DEBUG) {
-      Serial.println("[DUMPER] Opened (90 degrees)");
-    }
+    httpd_resp_send(req, "{\"dumper\":\"opened\"}", HTTPD_RESP_USE_STRLEN);
   } else {
-    server.send(400, "application/json", "{\"error\":\"State: 0 or 1\"}");
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "state must be 0 or 1");
   }
+  return ESP_OK;
 }
 
-void handleToF() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
-  
+esp_err_t handle_tof(httpd_req_t *req) {
   stm32Serial.println("t");
-  
-  // Wait for response
   unsigned long start = millis();
+  
   while (millis() - start < 100 && !stm32Serial.available()) {
     delay(1);
   }
-  
-  String distance = "8190"; // Default
+
+  int distance = 8190;  // Default in mm
   if (stm32Serial.available()) {
-    distance = stm32Serial.readStringUntil('\n');
-    distance.trim();
+    String distStr = stm32Serial.readStringUntil('\n');
+    distStr.trim();
     
-    if (DEBUG) {
-      Serial.printf("[TOF] Received: %s mm (%.1f cm)\n", 
-                    distance.c_str(), distance.toFloat()/10.0);
+    // Validate and convert
+    if (distStr.length() > 0 && distStr[0] >= '0' && distStr[0] <= '9') {
+      distance = distStr.toInt();
     }
-  } 
-  else if (DEBUG) {
-    Serial.println("[TOF] No response from STM32, using default");
   }
+
+  // Build response safely
+  char json[100];
+  snprintf(json, sizeof(json), 
+           "{\"distance_mm\":%d,\"distance_cm\":%.1f}", 
+           distance, distance / 10.0f);
   
-  String json = "{\"distance_mm\":" + distance + 
-                ",\"distance_cm\":" + String(distance.toFloat()/10.0) + "}";
-  
-  server.send(200, "application/json", json);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
 }
 
-void handleAutoPickup() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
+esp_err_t handle_autoPickup(httpd_req_t *req) {
   stm32Serial.println("t a p");
-  server.send(200, "application/json", "{\"auto_pickup\":\"toggled\"}");
+  httpd_resp_send(req, "{\"auto_pickup\":\"started\"}", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
 }
 
-void handleAutoRelease() {
-  server.sendHeader("Access-Control-Allow-Origin", "*");
+esp_err_t handle_autoRelease(httpd_req_t *req) {
   stm32Serial.println("t a r");
-  server.send(200, "application/json", "{\"auto_release\":\"toggled\"}");
+  httpd_resp_send(req, "{\"auto_release\":\"started\"}", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
 }
 
+esp_err_t handle_emergency(httpd_req_t *req) {
+  emergencyStop();
+  httpd_resp_send(req, "{\"emergency\":\"stopped\"}", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
+}
+
+esp_err_t handle_health(httpd_req_t *req) {
+  httpd_resp_send(req, "{\"status\":\"ok\"}", HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
+}
+
+esp_err_t handle_status(httpd_req_t *req) {
+  String resp = "device=Deneyap&free_heap=" + String(ESP.getFreeHeap()) + "&uptime=" + String(millis());
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_send(req, resp.c_str(), HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
+}
+
+void setRoutes() {
+  #define ON(PATH, METHOD, HANDLER) \
+  [&]() { \
+    httpd_uri_t uri = { \
+      .uri = PATH, \
+      .method = METHOD, \
+      .handler = HANDLER, \
+      .user_ctx = NULL \
+    }; \
+    httpd_register_uri_handler(http_server, &uri); \
+  }()
+
+  ON("/setSpeed", HTTP_POST, handle_setSpeed);
+  ON("/setServo", HTTP_POST, handle_setServo);
+  ON("/dumper", HTTP_POST, handle_dumper);
+  ON("/tof", HTTP_GET, handle_tof);
+  ON("/auto/pickup", HTTP_POST, handle_autoPickup);
+  ON("/auto/release", HTTP_POST, handle_autoRelease);
+  ON("/emergency", HTTP_POST, handle_emergency);
+  ON("/health", HTTP_GET, handle_health);
+  ON("/status", HTTP_GET, handle_status);
+
+  #undef ON
+}
