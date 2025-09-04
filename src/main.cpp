@@ -10,20 +10,6 @@ SoftwareSerial stm32Serial(D14, D13); // RX, TX pins for STM32 communication
 const char * ssid = "CAR";
 const char * password = "cezerilab2024";
 
-// //PINS FOR THE DENEYAP KART 1A V2
-// // Left side motor pins (Driver 1)
-// const uint8_t leftForward = A4; // R_PWM_LEFT
-// const uint8_t leftBackward = A5; // L_PWM_LEFT
-// const int R_EN_LEFT = A6;    // Left side right enable
-// const int L_EN_LEFT = A7;    // Left side left enable
-
-// // Right side motor pins (Driver 2)
-// const uint8_t rightForward = A1; //R_PWM_RIGHT
-// const uint8_t rightBackward = A0; //L_PWM_RIGHT
-// const int R_EN_RIGHT = A2;  // Right side right enable
-// const int L_EN_RIGHT = A3;  // Right side left enable
-
-
 //PINS FOR THE DENEYAP KART 1A 
 // Left side motor pins (Driver 1)
 const uint8_t leftForward = A4; // R_PWM_LEFT blue
@@ -114,12 +100,26 @@ void setup() {
   stm32Serial.begin(115200);
   esp_task_wdt_reset();
 
-  
+  // Start HTTP server for robot control
+  Serial.println("Starting robot control server...");
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 80;
+  config.max_uri_handlers = 16;
+  if (httpd_start(&http_server, &config) == ESP_OK) {
+    setRoutes();
+    Serial.println("Robot control server started on port 80");
+  } else {
+    Serial.println("Failed to start robot control server");
+  }
+  esp_task_wdt_reset();
+
   if (DEBUG) {
     Serial.println("\n=== Debug Mode Active ===");
-    Serial.println("Available Endpoints:");
-    Serial.println("  POST: /setSpeed, /setServo, /dumper, /auto/pickup, /auto/release, /emergency");
-    Serial.println("  GET:  /tof, /health, /status, /stream, /capture");
+    Serial.println("Robot Control Endpoints:");
+    Serial.println("POST: /setSpeed, /setServo, /dumper, /auto/pickup, /auto/release, /emergency");
+    Serial.println("GET:  /tof, /health, /status");
+    Serial.printf("Robot Control: http://%s/\n", WiFi.softAPIP().toString().c_str());
+    Serial.println("Camera will be available at: http://192.168.4.200/");
     Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
     Serial.printf("PSRAM available: %s\n", psramFound() ? "Yes" : "No");
   }
@@ -349,7 +349,95 @@ esp_err_t handle_setSpeed(httpd_req_t *req) {
   return ESP_OK;
 }
 
+// esp_err_t handle_setServo(httpd_req_t *req) {
+//   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  
+//   const char* servos[] = {"base", "shoulder", "elbow", "wrist", "gripper"};
+//   const char* ids[] = {"b", "s", "e", "w", "g"};
+//   int limits[] = {270, 270, 270, 270, 180};
+  
+//   char response[256] = "{\"updated\":{";
+//   int pos = strlen(response);
+//   bool moved = false;
+
+//   for (int i = 0; i < 5; i++) {
+//     char* arg = get_query_param(req, servos[i]);
+//     if (arg) {
+//       int angle = constrain(atoi(arg), 0, limits[i]);
+//       stm32Serial.printf("%c %d\n", ids[i][0], angle);
+      
+//       // Append to response safely
+//       int n = snprintf(response + pos, sizeof(response) - pos, 
+//                      "\"%s\":%d,", servos[i], angle);
+//       if (n > 0 && n < (int)(sizeof(response) - pos)) {
+//         pos += n;
+//         moved = true;
+//       }
+//       free(arg);
+//     }
+//   }
+
+//   if (!moved) {
+//     return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No servo specified");
+//   }
+  
+//   // Replace trailing comma with closing braces
+//   if (pos > 11 && pos < (int)sizeof(response) - 1) {
+//     response[pos-1] = '}';
+//     response[pos] = '}';
+//     response[pos+1] = '\0';
+    
+//     httpd_resp_set_type(req, "application/json");
+//     httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+//     return ESP_OK;
+//   }
+  
+//   return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Response build error");
+// }
+
+// char* get_query_param(httpd_req_t *req, const char* key) {
+//   char* buf = NULL;
+//   size_t buf_len = httpd_req_get_url_query_len(req) + 1;
+
+//   if (buf_len == 1) return NULL;  // No query
+
+//   buf = (char*)malloc(buf_len);
+//   if (!buf) return NULL;
+
+//   if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
+//     char* value = NULL;
+//     if (httpd_query_key_value(buf, key, buf, buf_len) == ESP_OK) {
+//       value = strdup(buf);  // Copy before freeing buf
+//     }
+//     free(buf);
+//     return value;
+//   }
+
+//   free(buf);
+//   return NULL;
+// }
+
+// Replace your handle_setServo function with this version that accepts body data like setSpeed
+
 esp_err_t handle_setServo(httpd_req_t *req) {
+  Serial.println("\n=== SERVO DEBUG START ===");
+  Serial.printf("Method: %s\n", req->method == HTTP_GET ? "GET" : 
+                req->method == HTTP_POST ? "POST" : "OTHER");
+  Serial.printf("URI: %s\n", req->uri);
+  
+  // Read the request body (like setSpeed does)
+  char buf[256];
+  int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+  if (len <= 0) {
+    Serial.println("ERROR: Missing or empty request body");
+    Serial.println("=== SERVO DEBUG END ===\n");
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing request body - Expected format: 'param=value&param2=value2'");
+  }
+  buf[len] = '\0';
+  
+  Serial.printf("Request body received: '%s'\n", buf);
+  Serial.printf("Body length: %d\n", len);
+
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   
   const char* servos[] = {"base", "shoulder", "elbow", "wrist", "gripper"};
@@ -360,84 +448,169 @@ esp_err_t handle_setServo(httpd_req_t *req) {
   int pos = strlen(response);
   bool moved = false;
 
-  for (int i = 0; i < 5; i++) {
-    char* arg = get_query_param(req, servos[i]);
-    if (arg) {
-      int angle = constrain(atoi(arg), 0, limits[i]);
-      stm32Serial.printf("%c %d\n", ids[i][0], angle);
+  // Parse the body data (format: param=value&param2=value2)
+  char* body_copy = strdup(buf); // Make a copy since strtok modifies the string
+  char* token = strtok(body_copy, "&");
+  
+  Serial.println("Parsing parameters:");
+  
+  while (token != NULL) {
+    Serial.printf("Processing token: '%s'\n", token);
+    
+    // Split token into key=value
+    char* equals = strchr(token, '=');
+    if (equals) {
+      *equals = '\0'; // Split the string
+      char* key = token;
+      char* value = equals + 1;
       
-      // Append to response safely
-      int n = snprintf(response + pos, sizeof(response) - pos, 
-                     "\"%s\":%d,", servos[i], angle);
-      if (n > 0 && n < (int)(sizeof(response) - pos)) {
-        pos += n;
-        moved = true;
+      Serial.printf("  Key: '%s', Value: '%s'\n", key, value);
+      
+      // Check if this key matches any servo
+      for (int i = 0; i < 5; i++) {
+        if (strcmp(key, servos[i]) == 0) {
+          int angle = atoi(value);
+          int constrained_angle = constrain(angle, 0, limits[i]);
+          
+          Serial.printf("  MATCH! %s: %d -> %d (limit: %d)\n", 
+                       servos[i], angle, constrained_angle, limits[i]);
+          
+          // Send to STM32
+          Serial.printf("  Sending to STM32: '%c %d'\n", ids[i][0], constrained_angle);
+          stm32Serial.printf("%c %d\n", ids[i][0], constrained_angle);
+          
+          // Add to response
+          int n = snprintf(response + pos, sizeof(response) - pos, 
+                         "\"%s\":%d,", servos[i], constrained_angle);
+          if (n > 0 && n < (int)(sizeof(response) - pos)) {
+            pos += n;
+            moved = true;
+            Serial.printf("  Added to response: %s:%d\n", servos[i], constrained_angle);
+          }
+          break;
+        }
       }
-      free(arg);
+    } else {
+      Serial.printf("  WARNING: Invalid parameter format (no '='): '%s'\n", token);
     }
-  }
-
-  if (!moved) {
-    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No servo specified");
+    
+    token = strtok(NULL, "&");
   }
   
-  // Replace trailing comma with closing braces
+  free(body_copy);
+  
+  Serial.printf("Total valid parameters processed: %s\n", moved ? "YES" : "NO");
+
+  if (!moved) {
+    Serial.println("ERROR: No valid servo parameters found");
+    Serial.println("Expected format: 'base=90&shoulder=45' or 'gripper=180'");
+    Serial.println("Valid parameters: base, shoulder, elbow, wrist, gripper");
+    Serial.println("=== SERVO DEBUG END ===\n");
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, 
+                              "No valid servo parameters found. Format: 'base=90&shoulder=45'");
+  }
+  
+  // Complete the JSON response
   if (pos > 11 && pos < (int)sizeof(response) - 1) {
-    response[pos-1] = '}';
+    response[pos-1] = '}'; // Replace trailing comma
     response[pos] = '}';
     response[pos+1] = '\0';
+    
+    Serial.printf("Final response: %s\n", response);
+    Serial.println("=== SERVO DEBUG END ===\n");
     
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
   }
   
+  Serial.println("ERROR: Response build error");
+  Serial.println("=== SERVO DEBUG END ===\n");
   return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Response build error");
 }
 
-char* get_query_param(httpd_req_t *req, const char* key) {
-  char* buf = NULL;
-  size_t buf_len = httpd_req_get_url_query_len(req) + 1;
+// You don't need the get_query_param function anymore since we're not using URL parameters
 
-  if (buf_len == 1) return NULL;  // No query
+// esp_err_t handle_dumper(httpd_req_t *req) {
+//   char* state_str = get_query_param(req, "state");
+//   if (!state_str) {
+//     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing 'state' param");
+//     return ESP_FAIL;
+//   }
 
-  buf = (char*)malloc(buf_len);
-  if (!buf) return NULL;
+//   int state = atoi(state_str);
+//   free(state_str);  // Don't forget!
 
-  if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
-    char* value = NULL;
-    if (httpd_query_key_value(buf, key, buf, buf_len) == ESP_OK) {
-      value = strdup(buf);  // Copy before freeing buf
-    }
-    free(buf);
-    return value;
-  }
+//   if (state == 0) {
+//     stm32Serial.println("d 0");
+//     httpd_resp_send(req, "{\"dumper\":\"closed\"}", HTTPD_RESP_USE_STRLEN);
+//   } else if (state == 1) {
+//     stm32Serial.println("d 90");
+//     httpd_resp_send(req, "{\"dumper\":\"opened\"}", HTTPD_RESP_USE_STRLEN);
+//   } else {
+//     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "state must be 0 or 1");
+//   }
+//   return ESP_OK;
+// }
 
-  free(buf);
-  return NULL;
-}
-
+// Replace your handle_dumper function with this body-based version
 esp_err_t handle_dumper(httpd_req_t *req) {
-  char* state_str = get_query_param(req, "state");
-  if (!state_str) {
-    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing 'state' param");
-    return ESP_FAIL;
+  Serial.println("\n=== DUMPER DEBUG START ===");
+  
+  // Read request body
+  char buf[64];
+  int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+  if (len <= 0) {
+    Serial.println("ERROR: Missing request body for dumper");
+    Serial.println("=== DUMPER DEBUG END ===\n");
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing request body - Expected: 'state=0' or 'state=1'");
+  }
+  buf[len] = '\0';
+  
+  Serial.printf("Dumper body received: '%s'\n", buf);
+
+  // Parse state=X format
+  char* equals = strchr(buf, '=');
+  if (!equals) {
+    Serial.println("ERROR: Invalid format, expected 'state=X'");
+    Serial.println("=== DUMPER DEBUG END ===\n");
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid format - Expected: 'state=0' or 'state=1'");
+  }
+  
+  char* key = buf;
+  char* value = equals + 1;
+  *equals = '\0'; // Split string
+  
+  Serial.printf("Key: '%s', Value: '%s'\n", key, value);
+  
+  // Check if key is "state"
+  if (strcmp(key, "state") != 0) {
+    Serial.printf("ERROR: Invalid parameter '%s', expected 'state'\n", key);
+    Serial.println("=== DUMPER DEBUG END ===\n");
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid parameter - Expected: 'state=0' or 'state=1'");
   }
 
-  int state = atoi(state_str);
-  free(state_str);  // Don't forget!
+  int state = atoi(value);
+  Serial.printf("Parsed state value: %d\n", state);
 
   if (state == 0) {
+    Serial.println("Sending to STM32: 'd 0' (close dumper)");
     stm32Serial.println("d 0");
+    Serial.println("=== DUMPER DEBUG END ===\n");
     httpd_resp_send(req, "{\"dumper\":\"closed\"}", HTTPD_RESP_USE_STRLEN);
   } else if (state == 1) {
+    Serial.println("Sending to STM32: 'd 90' (open dumper)");
     stm32Serial.println("d 90");
+    Serial.println("=== DUMPER DEBUG END ===\n");
     httpd_resp_send(req, "{\"dumper\":\"opened\"}", HTTPD_RESP_USE_STRLEN);
   } else {
+    Serial.printf("ERROR: Invalid state value %d, must be 0 or 1\n", state);
+    Serial.println("=== DUMPER DEBUG END ===\n");
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "state must be 0 or 1");
   }
   return ESP_OK;
 }
+
 
 esp_err_t handle_tof(httpd_req_t *req) {
   stm32Serial.println("t");
