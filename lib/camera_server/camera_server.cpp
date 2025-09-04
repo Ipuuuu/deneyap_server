@@ -1,26 +1,26 @@
-// camera_server.cpp
 #include "camera_server.h"
 #include "esp_camera.h"
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "img_converters.h"
+#include <esp_task_wdt.h>
 #include "Arduino.h"
 
-// Camera pins (Deneyap Kart 1A)
-#define CAMD2    3
-#define CAMD3    4
-#define CAMD4    5
-#define CAMD5    6
-#define CAMD6    7
-#define CAMD7    8
-#define CAMD8    9
-#define CAMD9    10
-#define CAMH     11
-#define CAMV     12
-#define CAMPC    13
-#define CAMXC    14
-#define CAMSC    15
-#define CAMSD    16
+// Camera pins (CORRECT for Deneyap Kart 1A)
+#define CAMD2    19      
+#define CAMD3    22     
+#define CAMD4    23    
+#define CAMD5    21   
+#define CAMD6    18     
+#define CAMD7    26    
+#define CAMD8    35   
+#define CAMD9    34  
+#define CAMH     39     
+#define CAMV     36    
+#define CAMPC    5     
+#define CAMXC    32     
+#define CAMSC    25   
+#define CAMSD    33      
 
 // Streaming constants
 static const char* STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=123456789000000000000987654321";
@@ -88,6 +88,9 @@ bool cameraInit() {
     return true;
   }
 
+  Serial.println("Starting camera initialization...");
+  esp_task_wdt_reset(); // Reset before camera init
+
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -103,46 +106,68 @@ bool cameraInit() {
   config.pin_pclk = CAMPC;
   config.pin_vsync = CAMV;
   config.pin_href = CAMH;
-  config.pin_sccb_sda = CAMSD;
-  config.pin_sccb_scl = CAMSC;
+  config.pin_sscb_sda = CAMSD;
+  config.pin_sscb_scl = CAMSC;
   config.pin_pwdn = -1;
   config.pin_reset = -1;
   config.xclk_freq_hz = 20000000;
+  config.frame_size = FRAMESIZE_VGA;  // Start with smaller size
   config.pixel_format = PIXFORMAT_JPEG;
-  config.frame_size = FRAMESIZE_SVGA;
-  config.jpeg_quality = 12;
-  config.fb_count = 1;
-  config.fb_location = CAMERA_FB_IN_PSRAM;
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+  config.fb_location = CAMERA_FB_IN_PSRAM;
+  config.jpeg_quality = 15;  // Lower quality for less processing
+  config.fb_count = 1;       // Single buffer to reduce memory usage
 
+  // Optimize settings based on available PSRAM
   if (psramFound()) {
-    config.jpeg_quality = 10;
+    Serial.println("PSRAM found - using optimized settings");
+    config.jpeg_quality = 12;
     config.fb_count = 2;
     config.grab_mode = CAMERA_GRAB_LATEST;
+  } else {
+    Serial.println("No PSRAM - using conservative settings");
+    config.frame_size = FRAMESIZE_CIF;
+    config.fb_location = CAMERA_FB_IN_DRAM;
+    config.jpeg_quality = 20;
   }
 
+  esp_task_wdt_reset(); // Reset before actual init
+
+  // Initialize camera
   esp_err_t err = esp_camera_init(&config);
+  
+  esp_task_wdt_reset(); // Reset after init
+  
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed: 0x%x\n", err);
+    Serial.printf("Camera init failed with error 0x%x\n", err);
     return false;
   }
 
+  // Get camera sensor for additional configuration
   sensor_t* s = esp_camera_sensor_get();
-  s->set_framesize(s, FRAMESIZE_VGA);      // 640x480
-  s->set_quality(s, 10);
+  if (!s) {
+    Serial.println("Failed to get camera sensor");
+    return false;
+  }
+  
+  // Apply sensor settings
+  s->set_framesize(s, FRAMESIZE_VGA);
+  s->set_quality(s, 12);
   s->set_brightness(s, 0);
   s->set_contrast(s, 0);
   s->set_saturation(s, 0);
-  s->set_gainceiling(s, (gainceiling_t)2);
+  s->set_gainceiling(s, (gainceiling_t)0);
+  s->set_colorbar(s, 0);
   s->set_whitebal(s, 1);
   s->set_gain_ctrl(s, 1);
   s->set_exposure_ctrl(s, 1);
   s->set_hmirror(s, 0);
   s->set_vflip(s, 0);
-  s->set_colorbar(s, 0);
+
+  esp_task_wdt_reset(); // Final reset after sensor config
 
   cameraInitialized = true;
-  Serial.println("Camera initialized");
+  Serial.println("Camera initialized successfully");
   return true;
 }
 
@@ -155,40 +180,86 @@ esp_err_t handle_index(httpd_req_t *req) {
 esp_err_t handle_stream(httpd_req_t *req) {
   httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  
+  esp_err_t res = ESP_OK;
+  size_t _jpg_buf_len = 0;
+  uint8_t * _jpg_buf = NULL;
+  camera_fb_t *fb = NULL; // Declare outside the loop
 
   while (true) {
-    camera_fb_t *fb = esp_camera_fb_get();
+    // Check if client is still connected
+    if (httpd_req_get_hdr_value_len(req, "Connection") == 0) {
+      Serial.println("Client disconnected, ending stream");
+      break;
+    }
+
+    fb = esp_camera_fb_get();
     if (!fb) {
       Serial.println("Frame capture failed");
-      httpd_resp_send_500(req);
-      return ESP_FAIL;
+      res = ESP_FAIL;
+      break;
     }
 
     if (fb->format != PIXFORMAT_JPEG) {
-      bool jpeg_converted = frame2jpg(fb, 80, &fb->buf, &fb->len);
+      bool jpeg_converted = frame2jpg(fb, 80, &_jpg_buf, &_jpg_buf_len);
       esp_camera_fb_return(fb);
+      fb = NULL;
       if (!jpeg_converted) {
         Serial.println("JPEG conversion failed");
-        return ESP_FAIL;
+        res = ESP_FAIL;
+        break;
       }
-    }
-
-    char buf[64];
-    size_t hlen = snprintf(buf, sizeof(buf), STREAM_PART, fb->len);
-    httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
-    httpd_resp_send_chunk(req, buf, hlen);
-    httpd_resp_send_chunk(req, (const char*)fb->buf, fb->len);
-
-    if (fb->format != PIXFORMAT_JPEG) {
-      free(fb->buf);
     } else {
-      esp_camera_fb_return(fb);
+      _jpg_buf_len = fb->len;
+      _jpg_buf = fb->buf;
     }
 
-    // Frame rate control (~30 FPS)
-    vTaskDelay(pdMS_TO_TICKS(30));
+    // Send boundary
+    if (httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY)) != ESP_OK) {
+      Serial.println("Failed to send boundary");
+      res = ESP_FAIL;
+      break;
+    }
+
+    // Send headers
+    char part_buf[64];
+    size_t hlen = snprintf(part_buf, sizeof(part_buf), STREAM_PART, _jpg_buf_len);
+    if (httpd_resp_send_chunk(req, part_buf, hlen) != ESP_OK) {
+      Serial.println("Failed to send headers");
+      res = ESP_FAIL;
+      break;
+    }
+
+    // Send image data
+    if (httpd_resp_send_chunk(req, (const char*)_jpg_buf, _jpg_buf_len) != ESP_OK) {
+      Serial.println("Failed to send image data");
+      res = ESP_FAIL;
+      break;
+    }
+
+    // Clean up frame buffer
+    if (fb) {
+      esp_camera_fb_return(fb);
+      fb = NULL;
+    } else if (_jpg_buf) {
+      free(_jpg_buf);
+      _jpg_buf = NULL;
+    }
+
+    // Essential: Reset watchdog and yield to other tasks
+    esp_task_wdt_reset();
+    vTaskDelay(pdMS_TO_TICKS(33)); // ~30 FPS
   }
-  return ESP_OK;
+
+  // Cleanup on exit
+  if (fb) {
+    esp_camera_fb_return(fb);
+  }
+  if (_jpg_buf) {
+    free(_jpg_buf);
+  }
+
+  return res;
 }
 
 esp_err_t handle_capture(httpd_req_t *req) {

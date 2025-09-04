@@ -83,43 +83,168 @@ void IRAM_ATTR onMotorTimer() {
   motorUpdateFlag = true;
 }
 
+// Add this to your setup() for testing
+void testPinConflicts() {
+  Serial.println("\n=== Testing Pin Conflicts ===");
+  
+  // Test if motor pins conflict with camera
+  Serial.println("Current motor pin assignments:");
+  Serial.printf("leftForward (A4): GPIO %d\n", leftForward);
+  Serial.printf("leftBackward (A5): GPIO %d\n", leftBackward);
+  Serial.printf("Camera SDA (4): %s\n", (leftForward == 4 || leftBackward == 4) ? "CONFLICT!" : "OK");
+  
+  // Check if any motor enable pins conflict
+  Serial.printf("R_EN_LEFT (D7): GPIO %d\n", R_EN_LEFT);
+  Serial.printf("L_EN_LEFT (D9): GPIO %d\n", L_EN_LEFT);
+  Serial.printf("R_EN_RIGHT (D4): GPIO %d\n", R_EN_RIGHT);
+  Serial.printf("L_EN_RIGHT (D6): GPIO %d\n", L_EN_RIGHT);
+  
+  // Temporarily disable motor drivers to test camera
+  Serial.println("\nTemporarily disabling motor drivers for camera test...");
+  digitalWrite(R_EN_LEFT, LOW);
+  digitalWrite(L_EN_LEFT, LOW);
+  digitalWrite(R_EN_RIGHT, LOW);
+  digitalWrite(L_EN_RIGHT, LOW);
+  
+  // Set all motor PWM pins to 0
+  analogWrite(leftForward, 0);
+  analogWrite(leftBackward, 0);
+  analogWrite(rightForward, 0);
+  analogWrite(rightBackward, 0);
+  
+  Serial.println("Motor drivers disabled. Try camera init now.");
+}
 
 void setup() {
   Serial.begin(115200);
-  stm32Serial.begin(115200);
+  delay(1000); // Give serial time to initialize
+  
+  Serial.println("\n=== Starting Robot Control System ===");
+  Serial.println("Reset reason: " + String(esp_reset_reason()));
 
-  setupPins();
+  // Disable existing GPIO ISR service to prevent conflicts
+  gpio_uninstall_isr_service();
+  
+  // Initialize watchdog with longer timeout
+  esp_task_wdt_init(15, true);  // 15-second timeout
+  esp_task_wdt_add(NULL);
+  esp_task_wdt_reset();
+
+  // Serial.println("Setting up pins...");
+  // setupPins();
+  // esp_task_wdt_reset();
+
+  Serial.println("Setting up motor timer...");
   setupMotorTimer();
+  esp_task_wdt_reset();
+
+  Serial.println("Setting up WiFi...");
   setupWiFi();
+  esp_task_wdt_reset();
 
-    // Initialize watchdog
-  esp_task_wdt_init(5, true);  // 5-second timeout
-  esp_task_wdt_add(NULL);       // Add current thread
+  // Serial.println("Initializing STM32 communication...");
+  // stm32Serial.begin(115200);
+  // esp_task_wdt_reset();
 
+  testPinConflicts(); // Test for pin conflicts
+
+  Serial.println("Attempting camera initialization...");
   bool cameraReady = cameraInit();
+  esp_task_wdt_reset();
+
   if (cameraReady) {
+    Serial.println("Starting camera server...");
     if (startCameraServer(&http_server)) {
       setRoutes();
-      if (DEBUG) Serial.println("Camera server and routes initialized");
+      Serial.println("✓ Camera server and routes initialized");
+    } else {
+      Serial.println("✗ Failed to start camera server");
     }
   } else {
-    Serial.println("Camera not available - starting HTTP server without camera endpoints");
+    Serial.println("⚠ Camera not available - starting HTTP server without camera endpoints");
+    
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
+    config.ctrl_port = 32768;
+    config.max_uri_handlers = 10;
+    config.stack_size = 8192;  // Increase stack size
+    
     if (httpd_start(&http_server, &config) == ESP_OK) {
       setRoutes();
+      Serial.println("✓ Basic HTTP server started");
+    } else {
+      Serial.println("✗ Failed to start HTTP server");
     }
   }
 
+  esp_task_wdt_reset();
+
   if (DEBUG) {
-    Serial.println("Debug Mode Active — Endpoints:");
-    Serial.println("  POST /setSpeed, /setServo, /dumper, /auto/pickup, /auto/release, /emergency");
-    Serial.println("  GET /tof, /health, /status, /stream, /capture");
+    Serial.println("\n=== Debug Mode Active ===");
+    Serial.println("Available Endpoints:");
+    Serial.println("  POST: /setSpeed, /setServo, /dumper, /auto/pickup, /auto/release, /emergency");
+    Serial.println("  GET:  /tof, /health, /status, /stream, /capture");
+    Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
+    Serial.printf("PSRAM available: %s\n", psramFound() ? "Yes" : "No");
   }
 
+  Serial.println("=== Setup Complete - Starting Main Loop ===\n");
+  esp_task_wdt_reset();
 }
 
+// void setup() {
+//   Serial.begin(115200);
+//   stm32Serial.begin(115200);
+//   delay(1000);
+
+//   gpio_uninstall_isr_service();
+//   Serial.println("Reset reason: " + String(esp_reset_reason()));
+
+//   // Initialize watchdog
+//   esp_task_wdt_init(15, true);  // 15-second timeout
+//   esp_task_wdt_add(NULL);       // Add current thread
+
+//   setupPins();
+//   setupMotorTimer();
+//   setupWiFi();
+
+
+//   bool cameraReady = cameraInit();
+//   if (cameraReady) {
+//     if (startCameraServer(&http_server)) {
+//       setRoutes();
+//       if (DEBUG) Serial.println("Camera server and routes initialized");
+//     }
+//   } else {
+//     Serial.println("Camera not available - starting HTTP server without camera endpoints");
+//     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+//     config.server_port = 80;
+//     if (httpd_start(&http_server, &config) == ESP_OK) {
+//       setRoutes();
+//     }
+//   }
+
+//   if (DEBUG) {
+//     Serial.println("Debug Mode Active — Endpoints:");
+//     Serial.println("  POST /setSpeed, /setServo, /dumper, /auto/pickup, /auto/release, /emergency");
+//     Serial.println("  GET /tof, /health, /status, /stream, /capture");
+//   }
+
+// }
+
 void loop() {
+  static unsigned long lastDebugPrint = 0;
+  static unsigned long loopCounter = 0;
+  
+  loopCounter++;
+  
+  // Debug print every 5 seconds
+  if (millis() - lastDebugPrint > 5000) {
+    Serial.printf("[DEBUG] Loop running - Count: %lu, Free heap: %u\n", 
+                  loopCounter, ESP.getFreeHeap());
+    lastDebugPrint = millis();
+  }
+  
   lastClientMillis = millis(); 
 
   if(motorUpdateFlag){
@@ -127,16 +252,22 @@ void loop() {
     updateMotors();
   }
 
-  esp_task_wdt_reset(); // Reset watchdog timer
-
-  // Check for inactivity (e.g., > 3.5 seconds since last request)
+  // CRITICAL: Reset watchdog more frequently
+  esp_task_wdt_reset();
+  
+  // Force yield to prevent blocking
+  vTaskDelay(1); // This gives other tasks a chance to run
+  
+  // Check for inactivity
   if (motors.isMoving && (millis() - lastClientMillis > 3500)) {
-    gradualStop();  // Smooth stop if no contact
+    gradualStop();
     if (DEBUG) {
       Serial.println("[SAFETY] No client activity for 3.5s - gradual stop triggered");
     }
   }
- 
+  
+  // Another watchdog reset at the end
+  esp_task_wdt_reset();
 }
 
 void setupPins(){
@@ -159,7 +290,7 @@ void setupPins(){
 }
 
 void setupMotorTimer() {
-  motorTimer = timerBegin(0, 80, true);
+  motorTimer = timerBegin(1, 80, true);
   timerAttachInterrupt(motorTimer, &onMotorTimer, true);
   timerAlarmWrite(motorTimer, 30000, true); // 30ms
   timerAlarmEnable(motorTimer);
@@ -227,6 +358,8 @@ void updateMotors() {
     setMotor(rightForward, rightBackward, motors.currentRight);
     motors.isMoving = (motors.currentLeft != 0 || motors.currentRight != 0);
   }
+
+  esp_task_wdt_reset(); // Reset watchdog timer
 }
 
 void gradualStop(){
