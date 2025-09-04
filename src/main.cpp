@@ -1,7 +1,6 @@
 
 #include <WiFi.h>
 #include "esp_http_server.h"
-#include "camera_server.h"
 #include <SoftwareSerial.h>
 #include <esp_task_wdt.h> // Watchdog timer
 
@@ -83,37 +82,6 @@ void IRAM_ATTR onMotorTimer() {
   motorUpdateFlag = true;
 }
 
-// Add this to your setup() for testing
-void testPinConflicts() {
-  Serial.println("\n=== Testing Pin Conflicts ===");
-  
-  // Test if motor pins conflict with camera
-  Serial.println("Current motor pin assignments:");
-  Serial.printf("leftForward (A4): GPIO %d\n", leftForward);
-  Serial.printf("leftBackward (A5): GPIO %d\n", leftBackward);
-  Serial.printf("Camera SDA (4): %s\n", (leftForward == 4 || leftBackward == 4) ? "CONFLICT!" : "OK");
-  
-  // Check if any motor enable pins conflict
-  Serial.printf("R_EN_LEFT (D7): GPIO %d\n", R_EN_LEFT);
-  Serial.printf("L_EN_LEFT (D9): GPIO %d\n", L_EN_LEFT);
-  Serial.printf("R_EN_RIGHT (D4): GPIO %d\n", R_EN_RIGHT);
-  Serial.printf("L_EN_RIGHT (D6): GPIO %d\n", L_EN_RIGHT);
-  
-  // Temporarily disable motor drivers to test camera
-  Serial.println("\nTemporarily disabling motor drivers for camera test...");
-  digitalWrite(R_EN_LEFT, LOW);
-  digitalWrite(L_EN_LEFT, LOW);
-  digitalWrite(R_EN_RIGHT, LOW);
-  digitalWrite(L_EN_RIGHT, LOW);
-  
-  // Set all motor PWM pins to 0
-  analogWrite(leftForward, 0);
-  analogWrite(leftBackward, 0);
-  analogWrite(rightForward, 0);
-  analogWrite(rightBackward, 0);
-  
-  Serial.println("Motor drivers disabled. Try camera init now.");
-}
 
 void setup() {
   Serial.begin(115200);
@@ -130,9 +98,9 @@ void setup() {
   esp_task_wdt_add(NULL);
   esp_task_wdt_reset();
 
-  // Serial.println("Setting up pins...");
-  // setupPins();
-  // esp_task_wdt_reset();
+  Serial.println("Setting up pins...");
+  setupPins();
+  esp_task_wdt_reset();
 
   Serial.println("Setting up motor timer...");
   setupMotorTimer();
@@ -142,43 +110,11 @@ void setup() {
   setupWiFi();
   esp_task_wdt_reset();
 
-  // Serial.println("Initializing STM32 communication...");
-  // stm32Serial.begin(115200);
-  // esp_task_wdt_reset();
-
-  testPinConflicts(); // Test for pin conflicts
-
-  Serial.println("Attempting camera initialization...");
-  bool cameraReady = cameraInit();
+  Serial.println("Initializing STM32 communication...");
+  stm32Serial.begin(115200);
   esp_task_wdt_reset();
 
-  if (cameraReady) {
-    Serial.println("Starting camera server...");
-    if (startCameraServer(&http_server)) {
-      setRoutes();
-      Serial.println("✓ Camera server and routes initialized");
-    } else {
-      Serial.println("✗ Failed to start camera server");
-    }
-  } else {
-    Serial.println("⚠ Camera not available - starting HTTP server without camera endpoints");
-    
-    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.server_port = 80;
-    config.ctrl_port = 32768;
-    config.max_uri_handlers = 10;
-    config.stack_size = 8192;  // Increase stack size
-    
-    if (httpd_start(&http_server, &config) == ESP_OK) {
-      setRoutes();
-      Serial.println("✓ Basic HTTP server started");
-    } else {
-      Serial.println("✗ Failed to start HTTP server");
-    }
-  }
-
-  esp_task_wdt_reset();
-
+  
   if (DEBUG) {
     Serial.println("\n=== Debug Mode Active ===");
     Serial.println("Available Endpoints:");
@@ -233,17 +169,6 @@ void setup() {
 // }
 
 void loop() {
-  static unsigned long lastDebugPrint = 0;
-  static unsigned long loopCounter = 0;
-  
-  loopCounter++;
-  
-  // Debug print every 5 seconds
-  if (millis() - lastDebugPrint > 5000) {
-    Serial.printf("[DEBUG] Loop running - Count: %lu, Free heap: %u\n", 
-                  loopCounter, ESP.getFreeHeap());
-    lastDebugPrint = millis();
-  }
   
   lastClientMillis = millis(); 
 
@@ -290,7 +215,7 @@ void setupPins(){
 }
 
 void setupMotorTimer() {
-  motorTimer = timerBegin(1, 80, true);
+  motorTimer = timerBegin(0, 80, true);
   timerAttachInterrupt(motorTimer, &onMotorTimer, true);
   timerAlarmWrite(motorTimer, 30000, true); // 30ms
   timerAlarmEnable(motorTimer);
