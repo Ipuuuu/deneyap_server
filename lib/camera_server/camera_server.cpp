@@ -79,7 +79,15 @@ esp_err_t handle_index(httpd_req_t *req);
 esp_err_t handle_stream(httpd_req_t *req);
 esp_err_t handle_capture(httpd_req_t *req);
 
+
 bool cameraInit() {
+  static bool cameraInitialized = false;
+  
+  if (cameraInitialized) {
+    Serial.println("Camera already initialized");
+    return true;
+  }
+
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -133,6 +141,7 @@ bool cameraInit() {
   s->set_vflip(s, 0);
   s->set_colorbar(s, 0);
 
+  cameraInitialized = true;
   Serial.println("Camera initialized");
   return true;
 }

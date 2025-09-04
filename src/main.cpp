@@ -1,7 +1,7 @@
 
 #include <WiFi.h>
 #include "esp_http_server.h"
-#include "camera_server.cpp"
+#include "camera_server.h"
 #include <SoftwareSerial.h>
 #include <esp_task_wdt.h> // Watchdog timer
 
@@ -93,7 +93,7 @@ void setup() {
   setupWiFi();
 
     // Initialize watchdog
-  esp_task_wdt_init(30, true);  // 30-second timeout
+  esp_task_wdt_init(5, true);  // 5-second timeout
   esp_task_wdt_add(NULL);       // Add current thread
 
   bool cameraReady = cameraInit();
