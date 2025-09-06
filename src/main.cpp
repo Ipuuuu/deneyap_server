@@ -39,6 +39,10 @@ const uint8_t ACCEL_STEP = 12, DECEL_STEP = 8;
 bool DEBUG = true;
 unsigned long lastClientMillis = 0;  // heartbeat timeout
 
+unsigned long lastSTM32Response = 0;
+const unsigned long STM32_TIMEOUT = 5000; // 5 second timeout
+bool waitingForSTM32 = false;
+
 // HTTP Request Handlers
 esp_err_t handle_setSpeed(httpd_req_t *req);
 esp_err_t handle_setServo(httpd_req_t *req);
@@ -62,6 +66,9 @@ void setupPins();
 void setupMotorTimer();
 void setupWiFi();
 char* get_query_param(httpd_req_t *req, const char* key);
+bool waitForSTM32Response(unsigned long timeout_ms);
+bool sendCoordinatedMovement(const char* servos[], const char* ids[], 
+                           int angles[], int count, int limits[]);
 
 // timer for motor update
 void IRAM_ATTR onMotorTimer() {
@@ -366,11 +373,15 @@ esp_err_t handle_setServo(httpd_req_t *req) {
   
   const char* servos[] = {"base", "shoulder", "elbow", "wrist", "gripper"};
   const char* ids[] = {"b", "s", "e", "w", "g"};
-  int limits[] = {270, 270, 270, 270, 180};
+  int limits[] = {270, 270, 270, 270, 180}; // come back!!!
+  
+  // Arrays to store the movement data
+  int angles[5];
+  bool servoMoved[5] = {false};
+  int moveCount = 0;
   
   char response[256] = "{\"updated\":{";
   int pos = strlen(response);
-  bool moved = false;
 
   // Parse the body data (format: param=value&param2=value2)
   char* body_copy = strdup(buf);
@@ -388,16 +399,15 @@ esp_err_t handle_setServo(httpd_req_t *req) {
       for (int i = 0; i < 5; i++) {
         if (strcmp(key, servos[i]) == 0) {
           int angle = constrain(atoi(value), 0, limits[i]);
+          angles[i] = angle;
+          servoMoved[i] = true;
+          moveCount++;
           
-          // Send to STM32
-          stm32Serial.printf("%c %d\n", ids[i][0], angle);
-          
-          // Add to response
+          // Add to response JSON
           int n = snprintf(response + pos, sizeof(response) - pos, 
                          "\"%s\":%d,", servos[i], angle);
           if (n > 0 && n < (int)(sizeof(response) - pos)) {
             pos += n;
-            moved = true;
           }
           break;
         }
@@ -408,9 +418,39 @@ esp_err_t handle_setServo(httpd_req_t *req) {
   
   free(body_copy);
 
-  if (!moved) {
+  if (moveCount == 0) {
     return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, 
                               "No valid servo parameters found. Format: 'base=90&shoulder=45'");
+  }
+  
+  // Send coordinated movement to STM32
+  const char* moveServos[5];
+  const char* moveIds[5];
+  int moveAngles[5];
+  int moveLimits[5];
+  int actualMoveCount = 0;
+  
+  for (int i = 0; i < 5; i++) {
+    if (servoMoved[i]) {
+      moveServos[actualMoveCount] = servos[i];
+      moveIds[actualMoveCount] = ids[i];
+      moveAngles[actualMoveCount] = angles[i];
+      moveLimits[actualMoveCount] = limits[i];
+      actualMoveCount++;
+    }
+  }
+  
+  // Clear any pending STM32 serial data
+  while (stm32Serial.available()) {
+    stm32Serial.read();
+  }
+  
+  // Send the coordinated movement
+  bool success = sendCoordinatedMovement(moveServos, moveIds, moveAngles, actualMoveCount, moveLimits);
+  
+  if (!success) {
+    return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, 
+                              "STM32 movement failed or timed out");
   }
   
   // Complete the JSON response
@@ -426,6 +466,7 @@ esp_err_t handle_setServo(httpd_req_t *req) {
   
   return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Response build error");
 }
+
 
 esp_err_t handle_dumper(httpd_req_t *req) {
   // Read request body
@@ -457,10 +498,10 @@ esp_err_t handle_dumper(httpd_req_t *req) {
 
   if (state == 0) {
     stm32Serial.println("d 0");
-    httpd_resp_send(req, "{\"dumper\":\"closed\"}", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, "{\"dumper\":\"opened\"}", HTTPD_RESP_USE_STRLEN);
   } else if (state == 1) {
     stm32Serial.println("d 90");
-    httpd_resp_send(req, "{\"dumper\":\"opened\"}", HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send(req, "{\"dumper\":\"closed\"}", HTTPD_RESP_USE_STRLEN);
   } else {
     httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "state must be 0 or 1");
   }
@@ -552,4 +593,76 @@ void setRoutes() {
   ON("/status", HTTP_GET, handle_status);
 
   #undef ON
+}
+
+// Helper function to wait for STM32 response
+bool waitForSTM32Response(unsigned long timeout_ms = 2000) {
+  unsigned long start = millis();
+  String response = "";
+  
+  while (millis() - start < timeout_ms) {
+    if (stm32Serial.available()) {
+      char c = stm32Serial.read();
+      if (c == '\n') {
+        response.trim();
+        if (DEBUG) Serial.printf("[STM32] Response: %s\n", response.c_str());
+        
+        // Check for completion responses
+        if (response.startsWith("DONE:") || 
+            response.startsWith("QUEUED:") || 
+            response.startsWith("EXEC:")) {
+          return true;
+        }
+        response = "";
+      } else {
+        response += c;
+      }
+    }
+    delay(1); // Small delay to prevent tight loop
+  }
+  
+  if (DEBUG) Serial.println("[STM32] Timeout waiting for response");
+  return false;
+}
+
+// Helper function to send coordinated movement
+bool sendCoordinatedMovement(const char* servos[], const char* ids[], 
+                           int angles[], int count, int limits[]) {
+  // Send all servo commands as a batch
+  for (int i = 0; i < count; i++) {
+    stm32Serial.printf("%c %d\n", ids[i][0], angles[i]);
+    if (DEBUG) Serial.printf("[STM32] Sent: %c %d\n", ids[i][0], angles[i]);
+    
+    // Small delay between commands to ensure proper queuing
+    delay(10);
+  }
+  
+  // Wait for the last movement to complete
+  // The STM32 will send DONE: messages for each servo when it completes
+  int completedCount = 0;
+  unsigned long start = millis();
+  String response = "";
+  
+  while (completedCount < count && millis() - start < 10000) { // 10 second total timeout
+    if (stm32Serial.available()) {
+      char c = stm32Serial.read();
+      if (c == '\n') {
+        response.trim();
+        if (DEBUG) Serial.printf("[STM32] Response: %s\n", response.c_str());
+        
+        if (response.startsWith("DONE:")) {
+          completedCount++;
+        } else if (response.startsWith("QUEUE_FULL")) {
+          if (DEBUG) Serial.println("[STM32] Queue full, movement failed");
+          return false;
+        }
+        response = "";
+      } else {
+        response += c;
+      }
+    }
+    delay(1);
+  }
+  
+  return completedCount == count;
 }
