@@ -532,8 +532,7 @@ esp_err_t handle_tof(httpd_req_t *req) {
   // Build response safely
   char json[100];
   snprintf(json, sizeof(json), 
-           "{\"distance_mm\":%d,\"distance_cm\":%.1f}", 
-           distance, distance / 10.0f);
+           "{\"distance_mm\":%d}", distance);
   
   httpd_resp_set_type(req, "application/json");
   httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
