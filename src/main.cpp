@@ -373,7 +373,7 @@ esp_err_t handle_setServo(httpd_req_t *req) {
   
   const char* servos[] = {"base", "shoulder", "elbow", "wrist", "gripper"};
   const char* ids[] = {"b", "s", "e", "w", "g"};
-  int limits[] = {270, 270, 270, 270, 180}; // come back!!!
+  int limits[] = {180, 180, 180, 180, 180}; 
   
   // Arrays to store the movement data
   int angles[5];
@@ -626,7 +626,7 @@ bool waitForSTM32Response(unsigned long timeout_ms = 2000) {
 
 // Helper function to send coordinated movement
 bool sendCoordinatedMovement(const char* servos[], const char* ids[], 
-                           int angles[], int count, int limits[]) {
+                           int angles[], int count, int ss[]) {
   // Send all servo commands as a batch
   for (int i = 0; i < count; i++) {
     stm32Serial.printf("%c %d\n", ids[i][0], angles[i]);
