@@ -47,7 +47,9 @@ bool waitingForSTM32 = false;
 esp_err_t handle_setSpeed(httpd_req_t *req);
 esp_err_t handle_setServo(httpd_req_t *req);
 esp_err_t handle_dumper(httpd_req_t *req);
-esp_err_t handle_tof(httpd_req_t *req);
+esp_err_t handle_gripper(httpd_req_t *req);
+esp_err_t handle_tof(httpd_req_t *req); 
+// esp_err_t handle_fixedBack(httpd_req_t *req); 
 esp_err_t handle_autoPickup(httpd_req_t *req);
 esp_err_t handle_autoRelease(httpd_req_t *req);
 esp_err_t handle_emergency(httpd_req_t *req);
@@ -508,6 +510,47 @@ esp_err_t handle_dumper(httpd_req_t *req) {
   return ESP_OK;
 }
 
+esp_err_t handle_gripper(httpd_req_t *req) {
+  // Read request body
+  char buf[64];
+  int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
+  if (len <= 0) {
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing request body - Expected: 'state=0' or 'state=1'");
+  }
+  buf[len] = '\0';
+  
+  // Parse state=X format
+  char* equals = strchr(buf, '=');
+  if (!equals) {
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid format - Expected: 'state=0' or 'state=1'");
+  }
+  
+  char* key = buf;
+  char* value = equals + 1;
+  *equals = '\0';
+  
+  // Check if key is "state"
+  if (strcmp(key, "state") != 0) {
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid parameter - Expected: 'state=0' or 'state=1'");
+  }
+
+  int state = atoi(value);
+  
+  if (DEBUG) Serial.printf("[DUMPER] State=%d\n", state);
+
+  if (state == 0) {
+    stm32Serial.println("g 0");
+    httpd_resp_send(req, "{\"gripper\":\"opened\"}", HTTPD_RESP_USE_STRLEN);
+  } else if (state == 1) {
+    stm32Serial.println("d 40");
+    httpd_resp_send(req, "{\"gripper\":\"closed\"}", HTTPD_RESP_USE_STRLEN);
+  } else {
+    httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "state must be 0 or 1");
+  }
+  return ESP_OK;
+}
+
+
 esp_err_t handle_tof(httpd_req_t *req) {
   stm32Serial.println("t");
   unsigned long start = millis();
@@ -585,6 +628,8 @@ void setRoutes() {
   ON("/setSpeed", HTTP_POST, handle_setSpeed);
   ON("/setServo", HTTP_POST, handle_setServo);
   ON("/dumper", HTTP_POST, handle_dumper);
+  ON("/gripper", HTTP_POST, handle_gripper);
+  // ON("/fixedBack", HTTP_POST, handle_fixedBack);
   ON("/tof", HTTP_GET, handle_tof);
   ON("/auto/pickup", HTTP_POST, handle_autoPickup);
   ON("/auto/release", HTTP_POST, handle_autoRelease);
