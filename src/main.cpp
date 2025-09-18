@@ -2,8 +2,9 @@
 #include <WiFi.h>
 #include "esp_http_server.h"
 #include <SoftwareSerial.h>
-#include <esp_task_wdt.h> // Watchdog timer
+#include <esp_task_wdt.h>
 
+// Use SoftwareSerial for STM32 comms
 SoftwareSerial stm32Serial(D14, D13); // RX, TX pins for STM32 communication
 
 // wifi credentials
@@ -35,7 +36,7 @@ httpd_handle_t http_server = NULL;
 hw_timer_t *motorTimer = NULL;
 volatile bool motorUpdateFlag = false;
 
-const uint8_t ACCEL_STEP = 12, DECEL_STEP = 8;
+const uint8_t ACCEL_STEP = 12, DECEL_STEP = 15;
 bool DEBUG = true;
 unsigned long lastClientMillis = 0;  // heartbeat timeout
 
@@ -47,9 +48,7 @@ bool waitingForSTM32 = false;
 esp_err_t handle_setSpeed(httpd_req_t *req);
 esp_err_t handle_setServo(httpd_req_t *req);
 esp_err_t handle_dumper(httpd_req_t *req);
-esp_err_t handle_gripper(httpd_req_t *req);
-esp_err_t handle_tof(httpd_req_t *req); 
-// esp_err_t handle_fixedBack(httpd_req_t *req); 
+esp_err_t handle_tof(httpd_req_t *req);
 esp_err_t handle_autoPickup(httpd_req_t *req);
 esp_err_t handle_autoRelease(httpd_req_t *req);
 esp_err_t handle_emergency(httpd_req_t *req);
@@ -62,150 +61,97 @@ void setMotor(uint8_t forwardPin, uint8_t backwardPin, int speed);
 void gradualStop();
 void emergencyStop();
 void updateMotors();
-
-// Utility Functions
 void setupPins();
 void setupMotorTimer();
 void setupWiFi();
-char* get_query_param(httpd_req_t *req, const char* key);
-bool waitForSTM32Response(unsigned long timeout_ms);
-bool sendCoordinatedMovement(const char* servos[], const char* ids[], 
-                           int angles[], int count, int limits[]);
+void processSTM32Queue();
+bool enqueueSTM32Command(const String& cmd);
+void flushSTM32Response();
 
-// timer for motor update
+// Timer interrupt - keep minimal
 void IRAM_ATTR onMotorTimer() {
   motorUpdateFlag = true;
 }
 
-
 void setup() {
   Serial.begin(115200);
-  delay(1000); // Give serial time to initialize
+  delay(300);
   
-  Serial.println("\n=== Starting Robot Control System ===");
-  Serial.println("Reset reason: " + String(esp_reset_reason()));
-
-  // Disable existing GPIO ISR service to prevent conflicts
-  gpio_uninstall_isr_service();
+  Serial.println("\n=== Robot Control System v3.0 ===");
   
-  // Initialize watchdog with longer timeout
-  esp_task_wdt_init(15, true);  // 15-second timeout
+  // Configure watchdog
+  esp_task_wdt_init(20, true);
   esp_task_wdt_add(NULL);
-  esp_task_wdt_reset();
 
-  Serial.println("Setting up pins...");
   setupPins();
-  esp_task_wdt_reset();
-
-  Serial.println("Setting up motor timer...");
   setupMotorTimer();
-  esp_task_wdt_reset();
-
-  Serial.println("Setting up WiFi...");
   setupWiFi();
-  esp_task_wdt_reset();
 
-  Serial.println("Initializing STM32 communication...");
-  stm32Serial.begin(115200);
-  esp_task_wdt_reset();
+  // Initialize STM32 communication - SoftwareSerial at 115200 baud
+  stm32Serial.begin(57600); 
+  delay(100);
+  
+  // Clear any startup messages
+  flushSTM32Response();
+  
+  // Initialize queue
+  for (int i = 0; i < STM32_QUEUE_SIZE; i++) {
+    stm32Queue[i].command = "";
+    stm32Queue[i].timestamp = 0;
+    stm32Queue[i].sent = false;
+  }
 
-  // Start HTTP server for robot control
-  Serial.println("Starting robot control server...");
+  // Start HTTP server
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
   config.max_uri_handlers = 16;
+  config.task_priority = 5;
+  config.stack_size = 4096;
+  
   if (httpd_start(&http_server, &config) == ESP_OK) {
     setRoutes();
-    Serial.println("Robot control server started on port 80");
+    Serial.println("HTTP server started on port 80");
   } else {
-    Serial.println("Failed to start robot control server");
-  }
-  esp_task_wdt_reset();
-
-  if (DEBUG) {
-    Serial.println("\n=== Debug Mode Active ===");
-    Serial.println("Robot Control Endpoints:");
-    Serial.println("POST: /setSpeed, /setServo, /dumper, /auto/pickup, /auto/release, /emergency");
-    Serial.println("GET:  /tof, /health, /status");
-    Serial.printf("Robot Control: http://%s/\n", WiFi.softAPIP().toString().c_str());
-    Serial.println("Camera will be available at: http://192.168.4.200/");
-    Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
-    Serial.printf("PSRAM available: %s\n", psramFound() ? "Yes" : "No");
+    Serial.println("Failed to start HTTP server");
   }
 
-  Serial.println("=== Setup Complete - Starting Main Loop ===\n");
-  esp_task_wdt_reset();
+  // Initialize STM32 settings
+  enqueueSTM32Command("verbose off");
+  enqueueSTM32Command("mode coord");
+  
+  Serial.printf("Ready! Control at http://192.168.4.1/\n");
+  Serial.printf("Free heap: %u bytes\n", ESP.getFreeHeap());
 }
 
-// void setup() {
-//   Serial.begin(115200);
-//   stm32Serial.begin(115200);
-//   delay(1000);
-
-//   gpio_uninstall_isr_service();
-//   Serial.println("Reset reason: " + String(esp_reset_reason()));
-
-//   // Initialize watchdog
-//   esp_task_wdt_init(15, true);  // 15-second timeout
-//   esp_task_wdt_add(NULL);       // Add current thread
-
-//   setupPins();
-//   setupMotorTimer();
-//   setupWiFi();
-
-
-//   bool cameraReady = cameraInit();
-//   if (cameraReady) {
-//     if (startCameraServer(&http_server)) {
-//       setRoutes();
-//       if (DEBUG) Serial.println("Camera server and routes initialized");
-//     }
-//   } else {
-//     Serial.println("Camera not available - starting HTTP server without camera endpoints");
-//     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-//     config.server_port = 80;
-//     if (httpd_start(&http_server, &config) == ESP_OK) {
-//       setRoutes();
-//     }
-//   }
-
-//   if (DEBUG) {
-//     Serial.println("Debug Mode Active — Endpoints:");
-//     Serial.println("  POST /setSpeed, /setServo, /dumper, /auto/pickup, /auto/release, /emergency");
-//     Serial.println("  GET /tof, /health, /status, /stream, /capture");
-//   }
-
-// }
-
 void loop() {
+  // Reset watchdog early and often
+  esp_task_wdt_reset();
   
-  lastClientMillis = millis(); 
-
-  if(motorUpdateFlag){
+  // Update motors
+  if (motorUpdateFlag) {
     motorUpdateFlag = false;
     updateMotors();
   }
-
-  // CRITICAL: Reset watchdog more frequently
-  esp_task_wdt_reset();
   
-  // Force yield to prevent blocking
-  vTaskDelay(1); // This gives other tasks a chance to run
+  // Process STM32 command queue
+  processSTM32Queue();
   
-  // Check for inactivity
-  if (motors.isMoving && (millis() - lastClientMillis > 3500)) {
+  // Safety timeout
+  if (motors.isMoving && (millis() - lastClientMillis > 3000)) {
     gradualStop();
-    if (DEBUG) {
-      Serial.println("[SAFETY] No client activity for 3.5s - gradual stop triggered");
-    }
+    if (DEBUG) Serial.println("[SAFETY] Client timeout - stopping motors");
   }
   
-  // Another watchdog reset at the end
-  esp_task_wdt_reset();
+  // Flush any STM32 responses to prevent buffer overflow
+  if (stm32Serial.available() > 32) {
+    flushSTM32Response();
+  }
+  
+  // Yield to other tasks
+  vTaskDelay(1);
 }
 
-void setupPins(){
-
+void setupPins() {
   pinMode(rightForward, OUTPUT);
   pinMode(rightBackward, OUTPUT);
   pinMode(leftForward, OUTPUT);
@@ -215,35 +161,36 @@ void setupPins(){
   pinMode(R_EN_RIGHT, OUTPUT);
   pinMode(L_EN_RIGHT, OUTPUT);
   
-  // Enable all motor driver sides
+  // Enable all motor drivers
   digitalWrite(R_EN_LEFT, HIGH);
   digitalWrite(L_EN_LEFT, HIGH);
   digitalWrite(R_EN_RIGHT, HIGH);
   digitalWrite(L_EN_RIGHT, HIGH);
-
 }
 
 void setupMotorTimer() {
   motorTimer = timerBegin(0, 80, true);
   timerAttachInterrupt(motorTimer, &onMotorTimer, true);
-  timerAlarmWrite(motorTimer, 30000, true); // 30ms
+  timerAlarmWrite(motorTimer, 25000, true); // 25ms = 40Hz
   timerAlarmEnable(motorTimer);
 }
 
 void setupWiFi() {
+  WiFi.mode(WIFI_AP);
   WiFi.softAP(ssid, password);
-  IPAddress IP = WiFi.softAPIP();
-  Serial.print("AP IP address: ");
-  Serial.println(IP);
+  
+  // Configure IP
+  IPAddress local_IP(192, 168, 4, 1);
+  IPAddress gateway(192, 168, 4, 1);
+  IPAddress subnet(255, 255, 255, 0);
+  
+  WiFi.softAPConfig(local_IP, gateway, subnet);
+  
+  Serial.print("AP IP: ");
+  Serial.println(WiFi.softAPIP());
 }
 
 void setMotor(uint8_t forwardPin, uint8_t backwardPin, int speed) {
-  // Ensure motor drivers are ENABLED before applying PWM
-  digitalWrite(R_EN_LEFT, HIGH);
-  digitalWrite(L_EN_LEFT, HIGH);
-  digitalWrite(R_EN_RIGHT, HIGH);
-  digitalWrite(L_EN_RIGHT, HIGH);
-
   if (speed > 0) {
     analogWrite(forwardPin, speed);
     analogWrite(backwardPin, 0);
@@ -269,8 +216,6 @@ void updateMotors() {
     } else {
       motors.currentLeft += step;
     }
-
-    
     changed = true;
   }
   
@@ -292,21 +237,15 @@ void updateMotors() {
     setMotor(rightForward, rightBackward, motors.currentRight);
     motors.isMoving = (motors.currentLeft != 0 || motors.currentRight != 0);
   }
-
-  esp_task_wdt_reset(); // Reset watchdog timer
 }
 
-void gradualStop(){
+void gradualStop() {
   motors.targetLeft = 0;
   motors.targetRight = 0;
 }
 
-void emergencyStop(){
-  if (DEBUG) {
-    Serial.println("[EMERGENCY] Emergency stop activated!");
-  }
-
-  // Disable all drivers for complete stop
+void emergencyStop() {
+  // Immediate stop
   digitalWrite(R_EN_LEFT, LOW);
   digitalWrite(L_EN_LEFT, LOW);
   digitalWrite(R_EN_RIGHT, LOW);
@@ -317,33 +256,82 @@ void emergencyStop(){
   analogWrite(rightForward, 0);   
   analogWrite(rightBackward, 0);
 
-  // Reset motor states 
   motors.currentLeft = 0;
   motors.currentRight = 0;
   motors.targetLeft = 0;
   motors.targetRight = 0;
   motors.isMoving = false;
+  
+  // Re-enable drivers
+  delay(100);
+  digitalWrite(R_EN_LEFT, HIGH);
+  digitalWrite(L_EN_LEFT, HIGH);
+  digitalWrite(R_EN_RIGHT, HIGH);
+  digitalWrite(L_EN_RIGHT, HIGH);
 
-  if (DEBUG) Serial.println("EMERGENCY STOP");
+  if (DEBUG) Serial.println("[EMERGENCY] All motors stopped");
 }
 
-//HANDLER DEFINITIONS
+// NON-BLOCKING STM32 command queue
+bool enqueueSTM32Command(const String& cmd) {
+  if (queueCount >= STM32_QUEUE_SIZE) {
+    if (DEBUG) Serial.println("[STM32] Queue full, dropping command");
+    return false;
+  }
+  
+  stm32Queue[queueTail].command = cmd;
+  stm32Queue[queueTail].timestamp = millis();
+  stm32Queue[queueTail].sent = false;
+  
+  queueTail = (queueTail + 1) % STM32_QUEUE_SIZE;
+  queueCount++;
+  
+  return true;
+}
+
+void processSTM32Queue() {
+  if (queueCount == 0) return;
+  
+  // Rate limit STM32 commands
+  if (millis() - lastSTM32Send < STM32_SEND_INTERVAL) return;
+  
+  // Send next command
+  STM32Command& cmd = stm32Queue[queueHead];
+  if (!cmd.sent) {
+    stm32Serial.println(cmd.command);
+    cmd.sent = true;
+    lastSTM32Send = millis();
+    
+    if (DEBUG) Serial.printf("[STM32] Sent: %s\n", cmd.command.c_str());
+  }
+  
+  // Remove from queue after sending
+  queueHead = (queueHead + 1) % STM32_QUEUE_SIZE;
+  queueCount--;
+}
+
+void flushSTM32Response() {
+  while (stm32Serial.available()) {
+    stm32Serial.read();
+  }
+}
+
+// HTTP HANDLERS - All made NON-BLOCKING
+
 esp_err_t handle_setSpeed(httpd_req_t *req) {
   char buf[64];
   int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
   if (len <= 0) {
-    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing request body");
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
   }
   buf[len] = '\0';
 
-  // Find space delimiter
   char* space = strchr(buf, ' ');
   if (!space) {
     return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Format: 'left right'");
   }
-  *space = '\0';  // Terminate first number
+  *space = '\0';
 
-  // Convert to integers
   int left = constrain(atoi(buf), -255, 255);
   int right = constrain(atoi(space + 1), -255, 255);
 
@@ -353,63 +341,56 @@ esp_err_t handle_setSpeed(httpd_req_t *req) {
 
   if (DEBUG) Serial.printf("[SPEED] L=%d R=%d\n", left, right);
 
-  char resp[100];
-  snprintf(resp, sizeof(resp), "{\"left\":%d,\"right\":%d}", left, right);
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_send(req, resp, HTTPD_RESP_USE_STRLEN);
+  httpd_resp_send(req, "{\"status\":\"ok\"}", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
 esp_err_t handle_setServo(httpd_req_t *req) {
-  // Read the request body
   char buf[256];
   int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
   if (len <= 0) {
-    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing request body - Expected format: 'param=value&param2=value2'");
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
   }
   buf[len] = '\0';
   
   if (DEBUG) Serial.printf("[SERVO] Body: %s\n", buf);
 
-  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-  
   const char* servos[] = {"base", "shoulder", "elbow", "wrist", "gripper"};
   const char* ids[] = {"b", "s", "e", "w", "g"};
-  int limits[] = {270, 270, 270, 270, 180}; // come back!!!
+  int limits[] = {270, 270, 270, 270, 180}; 
   
-  // Arrays to store the movement data
-  int angles[5];
-  bool servoMoved[5] = {false};
-  int moveCount = 0;
-  
-  char response[256] = "{\"updated\":{";
+  char response[256] = "{\"queued\":[";
   int pos = strlen(response);
+  bool anyCommand = false;
 
-  // Parse the body data (format: param=value&param2=value2)
+  // Parse body: param=value&param2=value2
   char* body_copy = strdup(buf);
   char* token = strtok(body_copy, "&");
   
   while (token != NULL) {
-    // Split token into key=value
     char* equals = strchr(token, '=');
     if (equals) {
       *equals = '\0';
       char* key = token;
       char* value = equals + 1;
       
-      // Check if this key matches any servo
       for (int i = 0; i < 5; i++) {
         if (strcmp(key, servos[i]) == 0) {
           int angle = constrain(atoi(value), 0, limits[i]);
-          angles[i] = angle;
-          servoMoved[i] = true;
-          moveCount++;
           
-          // Add to response JSON
-          int n = snprintf(response + pos, sizeof(response) - pos, 
-                         "\"%s\":%d,", servos[i], angle);
-          if (n > 0 && n < (int)(sizeof(response) - pos)) {
-            pos += n;
+          // FIXED: Queue command instead of blocking
+          String cmd = String(ids[i]) + " " + String(angle);
+          if (enqueueSTM32Command(cmd)) {
+            if (anyCommand) {
+              strncat(response, ",", sizeof(response) - strlen(response) - 1);
+            }
+            char item[64];
+            snprintf(item, sizeof(item), "\"%s\":%d", servos[i], angle);
+            strncat(response, item, sizeof(response) - strlen(response) - 1);
+            anyCommand = true;
+            
+            if (DEBUG) Serial.printf("[SERVO] Queued: %s=%d\n", servos[i], angle);
           }
           break;
         }
@@ -419,56 +400,17 @@ esp_err_t handle_setServo(httpd_req_t *req) {
   }
   
   free(body_copy);
-
-  if (moveCount == 0) {
-    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, 
-                              "No valid servo parameters found. Format: 'base=90&shoulder=45'");
+  
+  if (!anyCommand) {
+    return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No valid servo parameters");
   }
   
-  // Send coordinated movement to STM32
-  const char* moveServos[5];
-  const char* moveIds[5];
-  int moveAngles[5];
-  int moveLimits[5];
-  int actualMoveCount = 0;
+  strncat(response, "]}", sizeof(response) - strlen(response) - 1);
   
-  for (int i = 0; i < 5; i++) {
-    if (servoMoved[i]) {
-      moveServos[actualMoveCount] = servos[i];
-      moveIds[actualMoveCount] = ids[i];
-      moveAngles[actualMoveCount] = angles[i];
-      moveLimits[actualMoveCount] = limits[i];
-      actualMoveCount++;
-    }
-  }
-  
-  // Clear any pending STM32 serial data
-  while (stm32Serial.available()) {
-    stm32Serial.read();
-  }
-  
-  // Send the coordinated movement
-  bool success = sendCoordinatedMovement(moveServos, moveIds, moveAngles, actualMoveCount, moveLimits);
-  
-  if (!success) {
-    return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, 
-                              "STM32 movement failed or timed out");
-  }
-  
-  // Complete the JSON response
-  if (pos > 11 && pos < (int)sizeof(response) - 1) {
-    response[pos-1] = '}';
-    response[pos] = '}';
-    response[pos+1] = '\0';
-    
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
-    return ESP_OK;
-  }
-  
-  return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Response build error");
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+  return ESP_OK;
 }
-
 
 esp_err_t handle_dumper(httpd_req_t *req) {
   // Read request body
@@ -552,64 +494,47 @@ esp_err_t handle_gripper(httpd_req_t *req) {
 
 
 esp_err_t handle_tof(httpd_req_t *req) {
-  stm32Serial.println("t");
-  unsigned long start = millis();
+  // FIXED: Non-blocking TOF read
+  enqueueSTM32Command("t");
   
-  while (millis() - start < 100 && !stm32Serial.available()) {
-    delay(1);
-  }
-
-  int distance = 8190;  // Default in mm
-  if (stm32Serial.available()) {
-    String distStr = stm32Serial.readStringUntil('\n');
-    distStr.trim();
-    
-    // Validate and convert
-    if (distStr.length() > 0 && distStr[0] >= '0' && distStr[0] <= '9') {
-      distance = distStr.toInt();
-    }
-  }
-
-  if (DEBUG) Serial.printf("[TOF] Distance=%dmm\n", distance);
-
-  // Build response safely
-  char json[100];
-  snprintf(json, sizeof(json), 
-           "{\"distance_mm\":%d,\"distance_cm\":%.1f}", 
-           distance, distance / 10.0f);
-  
+  // Return immediately - don't wait for response
   httpd_resp_set_type(req, "application/json");
-  httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+  httpd_resp_send(req, "{\"status\":\"requested\"}", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
 esp_err_t handle_autoPickup(httpd_req_t *req) {
-  stm32Serial.println("t a p");
-  httpd_resp_send(req, "{\"auto_pickup\":\"started\"}", HTTPD_RESP_USE_STRLEN);
+  enqueueSTM32Command("t a p");
+  httpd_resp_send(req, "{\"auto_pickup\":\"queued\"}", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
 esp_err_t handle_autoRelease(httpd_req_t *req) {
-  stm32Serial.println("t a r");
-  httpd_resp_send(req, "{\"auto_release\":\"started\"}", HTTPD_RESP_USE_STRLEN);
+  enqueueSTM32Command("t a r");
+  httpd_resp_send(req, "{\"auto_release\":\"queued\"}", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
 esp_err_t handle_emergency(httpd_req_t *req) {
   emergencyStop();
-  httpd_resp_send(req, "{\"emergency\":\"stopped\"}", HTTPD_RESP_USE_STRLEN);
+  enqueueSTM32Command("stop");
+  httpd_resp_send(req, "{\"emergency\":\"executed\"}", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
 esp_err_t handle_health(httpd_req_t *req) {
-  httpd_resp_send(req, "{\"status\":\"ok\"}", HTTPD_RESP_USE_STRLEN);
+  httpd_resp_send(req, "{\"status\":\"healthy\"}", HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
 esp_err_t handle_status(httpd_req_t *req) {
-  String resp = "device=Deneyap&free_heap=" + String(ESP.getFreeHeap()) + "&uptime=" + String(millis());
-  httpd_resp_set_type(req, "text/plain");
-  httpd_resp_send(req, resp.c_str(), HTTPD_RESP_USE_STRLEN);
+  char status[200];
+  snprintf(status, sizeof(status), 
+           "{\"device\":\"Deneyap\",\"heap\":%u,\"uptime\":%lu,\"stm32_queue\":%d}",
+           ESP.getFreeHeap(), millis(), queueCount);
+  
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_send(req, status, HTTPD_RESP_USE_STRLEN);
   return ESP_OK;
 }
 
@@ -628,8 +553,6 @@ void setRoutes() {
   ON("/setSpeed", HTTP_POST, handle_setSpeed);
   ON("/setServo", HTTP_POST, handle_setServo);
   ON("/dumper", HTTP_POST, handle_dumper);
-  ON("/gripper", HTTP_POST, handle_gripper);
-  // ON("/fixedBack", HTTP_POST, handle_fixedBack);
   ON("/tof", HTTP_GET, handle_tof);
   ON("/auto/pickup", HTTP_POST, handle_autoPickup);
   ON("/auto/release", HTTP_POST, handle_autoRelease);
